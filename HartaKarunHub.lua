@@ -366,62 +366,9 @@ _G.HKSpin = {
 
 _G.HKSpinRank = { Rare = 1, Epic = 2, Legendary = 3, Mythic = 4, Celestial = 5, Exotic = 6 }
 
-pcall(function()
-    game.Players.LocalPlayer.PlayerGui:FindFirstChild("HK_Spin"):Destroy()
-end)
-
-local P = game.Players.LocalPlayer
-local gui = Instance.new("ScreenGui")
-gui.Name = "HK_Spin"
-gui.ResetOnSpawn = false
-gui.DisplayOrder = 998
-gui.Parent = P.PlayerGui
-
-local frame = Instance.new("Frame")
-frame.Size = UDim2.new(0, 250, 0, 250)
-frame.Position = UDim2.new(1, -260, 0, 80)
-frame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
-frame.BackgroundTransparency = 0.15
-frame.BorderSizePixel = 0
-frame.Active = true
-frame.Parent = gui
-pcall(function() frame.Draggable = true end)
-
-local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, 0, 0, 24)
-title.BackgroundTransparency = 1
-title.TextColor3 = Color3.new(1, 1, 1)
-title.Font = Enum.Font.Code
-title.TextSize = 13
-title.Text = "LUCKY SPIN LOG"
-title.Parent = frame
-
-local log = Instance.new("TextLabel")
-log.Size = UDim2.new(1, -10, 1, -60)
-log.Position = UDim2.new(0, 5, 0, 28)
-log.BackgroundTransparency = 1
-log.TextColor3 = Color3.new(1, 1, 1)
-log.Font = Enum.Font.Code
-log.TextSize = 12
-log.TextXAlignment = Enum.TextXAlignment.Left
-log.TextYAlignment = Enum.TextYAlignment.Top
-log.Text = "siap - tekan START"
-log.Parent = frame
-
-local function mkBtn(text, x, color, fn)
-    local b = Instance.new("TextButton")
-    b.Size = UDim2.new(0.5, -7, 0, 24)
-    b.Position = UDim2.new(x, 5, 1, -30)
-    b.BackgroundColor3 = color
-    b.TextColor3 = Color3.new(1, 1, 1)
-    b.Font = Enum.Font.Code
-    b.TextSize = 12
-    b.Text = text
-    b.Parent = frame
-    b.Activated:Connect(function() pcall(fn) end)
-end
-mkBtn("START", 0, Color3.fromRGB(30, 140, 60), function() _G.HKSpin.on = true end)
-mkBtn("STOP", 0.5, Color3.fromRGB(140, 40, 40), function() _G.HKSpin.on = false end)
+-- Catatan: tidak ada overlay sendiri. Kontrol lewat tab Summon di UI
+-- Obsidian (slot dump, mode, target rarity/class, START/STOP, status).
+-- Overlay lama HK_Spin sengaja tidak dibuat lagi.
 
 local RAR = { Rare = "R", Epic = "E", Legendary = "L", Mythic = "M", Celestial = "C", Exotic = "X" }
 
@@ -438,13 +385,18 @@ task.spawn(function()
     local sc = getRF("SummoningService", "GetSpinCounts")
     local tl = getRF("SummoningService", "ToggleSlotLock")
     local function refresh()
-        local t = { "sesi:" .. tostring(_G.HKSpin.sessionRolls) }
-        for i = #_G.HKSpin.log, 1, -1 do
-            if #t > 9 then break end
-            table.insert(t, _G.HKSpin.log[i])
+        -- Ditampilkan lewat label status di tab Summon (UI Obsidian).
+        -- Riwayat lengkap tetap di _G.HKSpin.log.
+        if _G.HKLib and not _G.HKLib.Unloaded then
+            pcall(function()
+                local last = "belum putar"
+                if #_G.HKSpin.log > 0 then last = _G.HKSpin.log[#_G.HKSpin.log] end
+                _G.HKLib.Options.HKSpinStatus:SetText(
+                    "roll:" .. tostring(_G.HKSpin.sessionRolls) .. " | " .. tostring(last))
+            end)
         end
-        log.Text = table.concat(t, "\n")
     end
+    refresh()
     while GEN == _G.HKSpinGen do
         if _G.HKSpin.on and spin and gd then
             local okAll, err = pcall(function()
