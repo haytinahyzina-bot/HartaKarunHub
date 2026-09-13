@@ -300,17 +300,29 @@ print("[HK] loops aktif")
 -- locked, kalau tidak loop berhenti sendiri. Dapat Exotic -> kunci + stop.
 -- Rate: Normal Exotic 0.05% | Lucky Exotic 0.1% (pity Exotic 500).
 
-_G.HKSpin = _G.HKSpin or {
+-- Harta Karun Dungeon | Auto Spin + live preview (gacha SummoningService)
+-- Aman: hanya memutar ke slot DUMP yang tidak di-lock. Slot lain WAJIB
+-- locked, kalau tidak loop berhenti sendiri. Dapat target -> kunci + stop.
+-- Rate: Normal Exotic 0.05% | Lucky Exotic 0.1% (pity Exotic 500).
+-- Dipakai oleh UI-Obsidian (tab Summon) dan overlay HK_Spin.
+-- Guard generasi: reload file menaikkan gen, loop lama ikut mati.
+
+_G.HKSpinGen = (_G.HKSpinGen or 0) + 1
+local GEN = _G.HKSpinGen
+
+_G.HKSpin = {
     on = false,
     mode = "LuckyFirst", -- "LuckyFirst" | "Lucky" | "Normal"
     delay = 1.2,
-    stopExotic = true,
-    stopCelestial = false,
+    targetRarity = "Exotic", -- berhenti saat rarity >= ini
+    targetClass = "",        -- berhenti saat nama class cocok ("" = abaikan)
     dumpSlot = 3,
     log = {},
     counts = {},
     sessionRolls = 0,
 }
+
+_G.HKSpinRank = { Rare = 1, Epic = 2, Legendary = 3, Mythic = 4, Celestial = 5, Exotic = 6 }
 
 pcall(function()
     game.Players.LocalPlayer.PlayerGui:FindFirstChild("HK_Spin"):Destroy()
@@ -391,17 +403,20 @@ task.spawn(function()
         end
         log.Text = table.concat(t, "\n")
     end
-    while true do
+    while GEN == _G.HKSpinGen do
         if _G.HKSpin.on and spin and gd then
             local okAll, err = pcall(function()
                 local _, slots = pcall(function() return gd:InvokeServer() end)
                 if type(slots) ~= "table" then error("slot?") end
-                if slots.Slots[_G.HKSpin.dumpSlot] == nil then error("no dump") end
-                if slots.SlotLocks[1] ~= true or slots.SlotLocks[2] ~= true then
-                    error("slot 1/2 tidak locked!")
+                local ds = _G.HKSpin.dumpSlot
+                if slots.Slots[ds] == nil then error("slot " .. tostring(ds) .. " tidak ada") end
+                for i in ipairs(slots.Slots) do
+                    if i ~= ds and slots.SlotLocks[i] ~= true then
+                        error("slot " .. tostring(i) .. " tidak locked!")
+                    end
                 end
-                if slots.SlotLocks[_G.HKSpin.dumpSlot] ~= false then
-                    error("dump sudah locked (dapat bagus?)")
+                if slots.SlotLocks[ds] ~= false then
+                    error("slot dump sudah locked (dapat bagus?)")
                 end
                 if slots.ActiveIndex ~= _G.HKSpin.dumpSlot then
                     local sw = getRF("SummoningService", "SwitchSlot")
@@ -418,17 +433,19 @@ task.spawn(function()
                 if type(res) ~= "table" then error("spin?") end
                 _G.HKSpin.sessionRolls += 1
                 local rar = tostring(res.Rarity)
+                local cls = tostring(res.ClassName)
                 _G.HKSpin.counts[rar] = (_G.HKSpin.counts[rar] or 0) + 1
                 table.insert(_G.HKSpin.log,
                     "[" .. (RAR[rar] or "?") .. "] " .. st:sub(1, 1) .. ":"
-                    .. rar .. " " .. tostring(res.ClassName))
-                if rar == "Exotic" and _G.HKSpin.stopExotic then
-                    if tl then pcall(function() tl:InvokeServer(_G.HKSpin.dumpSlot) end) end
-                    table.insert(_G.HKSpin.log, "EXOTIC! slot dikunci.")
-                    _G.HKSpin.on = false
-                elseif rar == "Celestial" and _G.HKSpin.stopCelestial then
-                    if tl then pcall(function() tl:InvokeServer(_G.HKSpin.dumpSlot) end) end
-                    table.insert(_G.HKSpin.log, "CELESTIAL! slot dikunci.")
+                    .. rar .. " " .. cls)
+                local want = _G.HKSpin.targetClass or ""
+                local hitClass = want ~= "" and string.lower(cls) == string.lower(want)
+                local hitRar = (_G.HKSpinRank[rar] or 0)
+                    >= (_G.HKSpinRank[_G.HKSpin.targetRarity] or 6)
+                if hitClass or hitRar then
+                    if tl then pcall(function() tl:InvokeServer(ds) end) end
+                    table.insert(_G.HKSpin.log,
+                        "TARGET: " .. cls .. " (" .. rar .. ") dikunci.")
                     _G.HKSpin.on = false
                 end
                 refresh()
@@ -465,6 +482,14 @@ _G.HK = _G.HK or {
     speed = 32, noclip = false, infjump = true, fly = false, flyspeed = 60,
     tick = 0, target = "none", stealth = true,
 }
+
+_G.HKSpin = _G.HKSpin or {
+    on = false, mode = "LuckyFirst", delay = 1.2,
+    targetRarity = "Exotic", targetClass = "", dumpSlot = 3,
+    log = {}, counts = {}, sessionRolls = 0,
+}
+_G.HKSpinRank = _G.HKSpinRank or
+    { Rare = 1, Epic = 2, Legendary = 3, Mythic = 4, Celestial = 5, Exotic = 6 }
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local lib = loadstring(game:HttpGet(repo .. "Library.lua"))()
@@ -625,6 +650,42 @@ B:AddButton({
     end,
 })
 
+-- ===== TAB SUMMON =====
+local SummonTab = Window:AddTab("Summon", "dices")
+local S = SummonTab:AddLeftGroupbox("Auto Spin")
+S:AddSlider("HKSpinSlot", {
+    Text = "Slot tukar (dump)",
+    Default = _G.HKSpin.dumpSlot, Min = 1, Max = 6, Rounding = 0,
+    Callback = function(v) _G.HKSpin.dumpSlot = v end,
+})
+S:AddDropdown("HKSpinMode", {
+    Text = "Jenis putaran",
+    Values = { "LuckyFirst", "Lucky", "Normal" },
+    Default = 1,
+    Callback = function(v) _G.HKSpin.mode = v end,
+})
+S:AddDropdown("HKSpinTarget", {
+    Text = "Berhenti saat rarity >=", 
+    Values = { "Exotic", "Celestial", "Mythic", "Legendary" },
+    Default = 1,
+    Callback = function(v) _G.HKSpin.targetRarity = v end,
+})
+S:AddInput("HKSpinClass", {
+    Text = "Target class (kosong = semua)",
+    Default = "",
+    Finished = true,
+    Callback = function(v) _G.HKSpin.targetClass = v end,
+})
+S:AddButton({
+    Text = "START spin",
+    Func = function() _G.HKSpin.on = true end,
+})
+S:AddButton({
+    Text = "STOP spin",
+    Func = function() _G.HKSpin.on = false end,
+})
+S:AddLabel("status", true, "HKSpinStatus")
+
 -- ===== TAB UI SETTINGS =====
 local UITab = Window:AddTab("UI Settings", "settings")
 local MG = UITab:AddLeftGroupbox("Menu")
@@ -645,6 +706,13 @@ task.spawn(function()
     while not lib.Unloaded do
         pcall(function()
             lib:SetWatermark("farm: " .. tostring(_G.HK and _G.HK.target or "?"))
+            local last = "belum putar"
+            if _G.HKSpin and #_G.HKSpin.log > 0 then
+                last = _G.HKSpin.log[#_G.HKSpin.log]
+            end
+            lib.Options.HKSpinStatus:SetText(
+                "roll:" .. tostring(_G.HKSpin and _G.HKSpin.sessionRolls or 0)
+                .. " | " .. tostring(last))
         end)
         task.wait(1)
     end
