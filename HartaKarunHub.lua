@@ -54,7 +54,7 @@ end
 -- Daftar pengecualian hover (nama model). Contoh: Galran si NPC lobby.
 -- NPC quest (folder Dialogue_NPCS), dummy latihan, dan karakter pemain
 -- selalu di-skip otomatis.
-_G.HKBlock = _G.HKBlock or { "Galran" }
+_G.HKBlock = _G.HKBlock or { "Galran", "BananitaDolphinita", "Forge Archon", "Awakened Devil", "Rig" }
 -- Cache target PER ZONA: habiskan semua mob di 1 room dulu baru pindah.
 -- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
 -- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
