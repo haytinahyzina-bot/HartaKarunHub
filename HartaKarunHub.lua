@@ -1,16 +1,15 @@
 -- Harta Karun Hub | single-file loader
 -- Cara pakai di executor: loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()
 
--- Harta Karun Dungeon | Master loops (farm hover, combat, esp, movement)
--- Dieksekusi sekali. Semua fitur dikendalikan lewat tabel _G.HK.
--- Auto-load saat pindah dungeon/tempat (teleport). Aman bila executor
--- tidak mendukung (di-skip).
+-- Harta Karun Dungeon | Farm v4 (tulis ulang bersih)
+-- Satu scanner + satu hover + attack/skill/ESP/stealth/gate.
+-- Semua fitur DEFAULT OFF, nyalakan dari dashboard.
+-- Auto-load saat teleport (queue_on_teleport).
+
 pcall(function()
     queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()')
 end)
--- Tested di: Harta Karun Dungeon [UPDATE 1.5], PlaceId 106484206883664.
 
--- DEFAULT OFF saat execute: semua fitur mati, nyalakan manual dari menu.
 _G.HK = _G.HK or {}
 _G.HK.hover = false
 _G.HK.height = _G.HK.height or 6.5
@@ -20,7 +19,7 @@ _G.HK.atkRange = _G.HK.atkRange or 15
 _G.HK.skill = false
 _G.HK.rate = _G.HK.rate or 0.25
 _G.HK.esp = false
-_G.HK.loot = false
+_G.HK.loot = true
 _G.HK.speed = 28
 _G.HK.noclip = false
 _G.HK.infjump = false
@@ -30,8 +29,17 @@ _G.HK.tick = 0
 _G.HK.target = "none"
 _G.HK.stealth = false
 
--- ID animasi ayunan basic attack (Ronin/Animations + OriginalAttacks).
--- Track yang cocok di-stop tiap frame render -> damage tetap masuk (server-side).
+-- Pengecualian hover (nama model). NPC quest / dummy / pemain di-skip otomatis.
+_G.HKBlock = _G.HKBlock or { "Galran", "BananitaDolphinita", "Forge Archon", "Awakened Devil", "Rig" }
+_G.HKZone = { room = nil }
+_G.HKTarget = nil
+_G.HKAltarDone = _G.HKAltarDone or {}
+
+-- Tombol skill (1-4) + heal (5). Ubah sesukamu.
+_G.HKSkillKeys = _G.HKSkillKeys or { "One", "Two", "Three", "Four" }
+_G.HK.autoHeal = false
+
+-- ID animasi ayunan (stealth). Damage tetap masuk (server-side).
 _G.HKSwingIds = {
     ["106806110702885"] = true, ["109893308802725"] = true,
     ["126671356379936"] = true, ["112357005052418"] = true,
@@ -43,6 +51,8 @@ local P = game.Players.LocalPlayer
 local RS = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
 local Inputs = game.ReplicatedStorage.Player.Remotes.Inputs
+local HKVIM = nil
+pcall(function() HKVIM = game:GetService("VirtualInputManager") end)
 
 local function getGen()
     for _, c in ipairs(workspace:GetChildren()) do
@@ -53,105 +63,120 @@ local function getGen()
     return nil
 end
 
--- Daftar pengecualian hover (nama model). Contoh: Galran si NPC lobby.
--- NPC quest (folder Dialogue_NPCS), dummy latihan, dan karakter pemain
--- selalu di-skip otomatis.
-_G.HKBlock = _G.HKBlock or { "Galran", "BananitaDolphinita", "Forge Archon", "Awakened Devil", "Rig" }
--- Cache target PER ZONA: habiskan semua mob di 1 room dulu baru pindah.
--- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
--- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
--- ROOM ITU. Room bersih -> pindah ke room milik mob terdekat global.
--- Aturan hidup (TANPA filter nama/jenis):
---   Humanoid.Health > 0 ATAU
---   (CanAttack == true dan State ~= "Dead") ATAU
---   (punya attribute HealthOverride dan State ~= "Dead").
--- Satu-satunya yang di-skip: karakter pemain (sendiri + pemain lain).
-_G.HKTarget = nil
-_G.HKZone = { room = nil }
+local function mobAlive(m)
+    for _, n in ipairs(_G.HKBlock) do
+        if m.Name == n then
+            return false
+        end
+    end
+    local fn = m:GetFullName()
+    if string.find(fn, "Dialogue_NPCS")
+        or string.find(fn, "Combat_Dummies")
+        or string.find(fn, "PlayerModels") then
+        return false
+    end
+    local hum = m:FindFirstChildOfClass("Humanoid")
+    if hum and hum.Health > 0 then
+        return true
+    end
+    local st = m:GetAttribute("State")
+    if m:GetAttribute("CanAttack") == true and st ~= "Dead" then
+        return true
+    end
+    if m:GetAttribute("HealthOverride") ~= nil and st ~= "Dead" then
+        return true
+    end
+    return false
+end
+
+local function mobHP(m)
+    local hum = m:FindFirstChildOfClass("Humanoid")
+    if hum then
+        return hum.Health
+    end
+    local ov = m:GetAttribute("HealthOverride")
+    if type(ov) == "number" then
+        return ov
+    end
+    return 1e9
+end
+
+local function mobPart(m)
+    return m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso")
+end
+
+-- Scanner: tiap 0.5 dtk petakan mob hidup ke room, prioritaskan
+-- darah terendah di room aktif. Di luar Generated tetap dilirik
+-- (maks 600 stud) supaya event tidak ke-skip total.
 task.spawn(function()
     while true do
         pcall(function()
             local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
+                local chars = {}
+                for _, pl in ipairs(game.Players:GetPlayers()) do
+                    if pl.Character then
+                        chars[pl.Character] = true
+                    end
+                end
                 local gen = getGen()
+                local rooms = {}
                 if gen then
-                    local rooms = {}
                     for _, c in ipairs(gen:GetChildren()) do
                         local n = string.match(c.Name, "^Room_(%d+)$")
                         if n and c:IsA("Model") then
                             local ok, piv = pcall(function() return c:GetPivot() end)
-                            if ok then rooms[tonumber(n)] = piv.Position end
+                            if ok then
+                                rooms[tonumber(n)] = piv.Position
+                            end
                         end
                     end
-                    local byRoom = {}
-                    local best, bestRoom, bd = nil, nil, 1e9
-                    local chars = {}
-                    for _, pl in ipairs(game.Players:GetPlayers()) do
-                        if pl.Character then chars[pl.Character] = true end
-                    end
-                    local function mobAlive(m)
-                        for _, n in ipairs(_G.HKBlock) do
-                            if m.Name == n then return false end
-                        end
-                        local fn = m:GetFullName()
-                        if string.find(fn, "Dialogue_NPCS")
-                            or string.find(fn, "Combat_Dummies")
-                            or string.find(fn, "PlayerModels") then
-                            return false
-                        end
-                        local hum = m:FindFirstChildOfClass("Humanoid")
-                        if hum and hum.Health > 0 then return true end
-                        local st = m:GetAttribute("State")
-                        if m:GetAttribute("CanAttack") == true and st ~= "Dead" then
-                            return true
-                        end
-                        if m:GetAttribute("HealthOverride") ~= nil and st ~= "Dead" then
-                            return true
-                        end
-                        return false
-                    end
-                    for _, d in ipairs(workspace:GetDescendants()) do
-                        if d:IsA("Model") and d ~= P.Character and not chars[d]
-                            and string.find(d:GetFullName(), "Generated") then
-                            if mobAlive(d) then
-                                local th = d:FindFirstChild("HumanoidRootPart")
-                                    or d:FindFirstChild("Torso")
-                                if th then
-                                    local dist = (th.Position - hrp.Position).Magnitude
-                                    if dist < 600 then
-                                        local rn, rd = 0, 1e9
-                                        for n, pos in pairs(rooms) do
-                                            local dxz = Vector2.new(
-                                                th.Position.X - pos.X,
-                                                th.Position.Z - pos.Z).Magnitude
-                                            if dxz < rd then rn, rd = n, dxz end
+                end
+                local byRoom = {}
+                local best, bestRoom, bd = nil, nil, 1e9
+                for _, d in ipairs(workspace:GetDescendants()) do
+                    if d:IsA("Model") and d ~= P.Character and not chars[d] then
+                        if mobAlive(d) then
+                            local th = mobPart(d)
+                            if th then
+                                local dist = (th.Position - hrp.Position).Magnitude
+                                if dist < 600 then
+                                    local rn, rd = 0, 1e9
+                                    for n, pos in pairs(rooms) do
+                                        local dxz = Vector2.new(
+                                            th.Position.X - pos.X,
+                                            th.Position.Z - pos.Z).Magnitude
+                                        if dxz < rd then
+                                            rn, rd = n, dxz
                                         end
-                                        byRoom[rn] = byRoom[rn] or {}
-                                        table.insert(byRoom[rn], { m = d, d = dist })
-                                        if dist < bd then best, bestRoom, bd = d, rn, dist end
+                                    end
+                                    byRoom[rn] = byRoom[rn] or {}
+                                    table.insert(byRoom[rn], { m = d, hp = mobHP(d) })
+                                    if dist < bd then
+                                        best, bestRoom, bd = d, rn, dist
                                     end
                                 end
                             end
                         end
                     end
-                    local cur = _G.HKZone.room
-                    local tgt = nil
-                    if cur and byRoom[cur] and #byRoom[cur] > 0 then
-                        table.sort(byRoom[cur], function(a, b) return a.d < b.d end)
-                        tgt = byRoom[cur][1]
-                    elseif best then
-                        _G.HKZone.room = bestRoom
-                        tgt = { m = best, d = bd }
-                    else
-                        _G.HKZone.room = nil
-                    end
-                    _G.HKTarget = tgt and tgt.m or nil
-                    if tgt then
-                        _G.HK.target = "R" .. tostring(_G.HKZone.room) .. " "
-                            .. tgt.m.Name .. " " .. tostring(math.floor(tgt.d)) .. "st"
-                    else
-                        _G.HK.target = "no mob"
-                    end
+                end
+                local cur = _G.HKZone.room
+                local tgt = nil
+                if cur and byRoom[cur] and #byRoom[cur] > 0 then
+                    table.sort(byRoom[cur], function(a, b) return a.hp < b.hp end)
+                    tgt = byRoom[cur][1]
+                elseif best then
+                    _G.HKZone.room = bestRoom
+                    tgt = { m = best, hp = mobHP(best) }
+                else
+                    _G.HKZone.room = nil
+                end
+                _G.HKTarget = tgt and tgt.m or nil
+                if tgt then
+                    _G.HK.target = "R" .. tostring(_G.HKZone.room) .. " "
+                        .. tgt.m.Name .. " hp" .. tostring(math.floor(tgt.hp))
+                else
+                    _G.HK.target = "no mob"
                 end
             end
         end)
@@ -159,7 +184,7 @@ task.spawn(function()
     end
 end)
 
--- Loop utama: hover + speed lock + fly + noclip + auto chest
+-- Loop utama: speed lock + noclip + fly + hover tidur.
 RS.Heartbeat:Connect(function()
     _G.HK.tick += 1
     local ch = P.Character
@@ -169,7 +194,6 @@ RS.Heartbeat:Connect(function()
         _G.HK.target = "dead/none"
         return
     end
-
     if _G.HK.noclip then
         for _, v in ipairs(ch:GetDescendants()) do
             if v:IsA("BasePart") and v.CanCollide then
@@ -177,11 +201,9 @@ RS.Heartbeat:Connect(function()
             end
         end
     end
-
     if hum.WalkSpeed ~= _G.HK.speed then
         hum.WalkSpeed = _G.HK.speed
     end
-
     if _G.HK.fly then
         local cf = hrp.CFrame
         local mv = Vector3.new()
@@ -196,168 +218,34 @@ RS.Heartbeat:Connect(function()
             hrp.Velocity = Vector3.new()
         end
     end
-
     local mob = _G.HKTarget
-    local dist = 0
-    if mob and mob.Parent then
-        local okMob = false
-        local mhum = mob:FindFirstChildOfClass("Humanoid")
-        if mhum and mhum.Health > 0 then okMob = true end
-        local mst = mob:GetAttribute("State")
-        if mob:GetAttribute("CanAttack") == true and mst ~= "Dead" then
-            okMob = true
-        end
-        if mob:GetAttribute("HealthOverride") ~= nil and mst ~= "Dead" then
-            okMob = true
-        end
-        if okMob then
-            local th0 = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
-            if th0 then dist = (th0.Position - hrp.Position).Magnitude end
-        else
-            mob = nil
-        end
-    else
+    if mob and mob.Parent and not mobAlive(mob) then
         mob = nil
     end
     if _G.HK.hover and mob then
-        -- Tidur di atas kepala, menghadap ke bawah (CFrame melihat ke mob).
-        -- Basic attack tetap kena, melee mob tidak sampai.
-        -- Batas 600 stud: di luar itu (beda map) tidak dikejar.
-        local th = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
-        if th and (th.Position - hrp.Position).Magnitude <= 600 then
+        local th = mobPart(mob)
+        if th then
             hum.AutoRotate = false
-            -- Tinggi dijepit maks 30.
             local h = _G.HK.height
-            if h > 30 then h = 30 end
-            if h < 4 then h = 4 end
+            if h > 30 then
+                h = 30
+            end
+            if h < 4 then
+                h = 4
+            end
             hrp.CFrame = CFrame.new(th.Position + Vector3.new(0, h, 0), th.Position)
             hrp.Velocity = Vector3.new()
             hrp.RotVelocity = Vector3.new()
-            _G.HK.target = mob.Name .. " " .. tostring(math.floor(dist)) .. "st"
         end
     else
-        -- Tidak ada target: JANGAN kunci posisi, biar bebas gerak manual.
         hum.AutoRotate = true
         if mob then
             _G.HK.target = mob.Name .. " (hover off)"
-        else
-            _G.HK.target = "no mob"
         end
     end
 end)
 
--- Gate loop (ala video): kalau tidak ada target mob, urus gate yang baru
--- dibersihkan dulu -------- chest di room itu, lalu altar berkah, baru maju ke
--- room berikutnya buat trigger wave. Begitu ada mob, hover farm ambil alih.
--- Altar yang sudah dipakai dicatat biar tidak dikunjungi ulang.
-_G.HKAltarDone = _G.HKAltarDone or {}
-task.spawn(function()
-    while true do
-        if _G.HK.chest and _G.HKTarget == nil then
-            pcall(function()
-                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
-                if hrp then
-                    local gen = getGen()
-                    if gen then
-                        local rooms = {}
-                        for _, c in ipairs(gen:GetChildren()) do
-                            local n = string.match(c.Name, "^Room_(%d+)$")
-                            if n and c:IsA("Model") then
-                                local ok, piv = pcall(function() return c:GetPivot() end)
-                                if ok then
-                                    table.insert(rooms, { n = tonumber(n), pos = piv.Position })
-                                end
-                            end
-                        end
-                        table.sort(rooms, function(a, b) return a.n < b.n end)
-                        local function roomOf(pos)
-                            local rn, rd = 0, 1e9
-                            for _, r in ipairs(rooms) do
-                                local dxz = Vector2.new(
-                                    pos.X - r.pos.X, pos.Z - r.pos.Z).Magnitude
-                                if dxz < rd then rn, rd = r.n, dxz end
-                            end
-                            return rn
-                        end
-                        local cur = _G.HKZone.room
-                        local bestIn, bdIn, prIn = nil, 1e9, nil
-                        local bestAny, bdAny, prAny = nil, 1e9, nil
-                        for _, d in ipairs(gen:GetDescendants()) do
-                            if d:IsA("ProximityPrompt") and d.Enabled
-                                and string.find(string.lower(d.ActionText), "loot") then
-                                local m = d.Parent
-                                while m and not m:IsA("Model") do m = m.Parent end
-                                if m then
-                                    local ok, piv = pcall(function() return m:GetPivot() end)
-                                    if ok then
-                                        local dist = (piv.Position - hrp.Position).Magnitude
-                                        if dist < bdAny then
-                                            bestAny, bdAny, prAny = m, dist, d
-                                        end
-                                        if cur and roomOf(piv.Position) == cur
-                                            and dist < bdIn then
-                                            bestIn, bdIn, prIn = m, dist, d
-                                        end
-                                    end
-                                end
-                            end
-                        end
-                        local tgt, pr = bestIn, prIn
-                        if not tgt then tgt, pr = bestAny, prAny end
-                        if tgt and pr then
-                            local piv = tgt:GetPivot()
-                            hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
-                            hrp.Velocity = Vector3.new()
-                            task.wait(0.6)
-                            pcall(function() fireproximityprompt(pr) end)
-                        else
-                            local altar, apr = nil, nil
-                            local abd = 1e9
-                            for _, d in ipairs(gen:GetDescendants()) do
-                                if d:IsA("ProximityPrompt") and d.Enabled
-                                    and string.find(string.lower(d.ActionText), "bless") then
-                                    local m = d.Parent
-                                    while m and not m:IsA("Model") do m = m.Parent end
-                                    if m and not _G.HKAltarDone[m:GetFullName()] then
-                                        local ok, piv = pcall(function() return m:GetPivot() end)
-                                        if ok then
-                                            if cur and roomOf(piv.Position) ~= cur then
-                                                -- utamakan altar satu room, tapi ambil juga kalau dekat
-                                            end
-                                            local dist = (piv.Position - hrp.Position).Magnitude
-                                            if dist < abd then altar, abd, apr = m, dist, d end
-                                        end
-                                    end
-                                end
-                            end
-                            if altar and apr then
-                                _G.HKAltarDone[altar:GetFullName()] = true
-                                local piv = altar:GetPivot()
-                                hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
-                                hrp.Velocity = Vector3.new()
-                                task.wait(0.6)
-                                pcall(function() fireproximityprompt(apr) end)
-                            elseif cur then
-                            local nxt = nil
-                            for _, r in ipairs(rooms) do
-                                if r.n > cur and (not nxt or r.n < nxt.n) then nxt = r end
-                            end
-                            if not nxt then nxt = rooms[1] end
-                            if nxt then
-                                hrp.CFrame = CFrame.new(nxt.pos.X, nxt.pos.Y + 5, nxt.pos.Z)
-                                hrp.Velocity = Vector3.new()
-                            end
-                        end
-                    end
-                end
-            end
-        end)
-    end
-        task.wait(2)
-    end
-end)
-
--- Spam attack: hanya menyerang kalau ada target dalam jarak atkRange.
+-- Attack: hanya kalau target dalam jarak atkRange.
 task.spawn(function()
     while true do
         if _G.HK.atk then
@@ -365,10 +253,8 @@ task.spawn(function()
                 local mob = _G.HKTarget
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 if mob and mob.Parent and hrp then
-                    local th = mob:FindFirstChild("HumanoidRootPart")
-                        or mob:FindFirstChild("Torso")
-                    if th and (th.Position - hrp.Position).Magnitude
-                        <= (_G.HK.atkRange or 15) then
+                    local th = mobPart(mob)
+                    if th and (th.Position - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
                         Inputs.Attack:FireServer()
                     end
                 end
@@ -378,13 +264,7 @@ task.spawn(function()
     end
 end)
 
--- Auto skill via hotkey beneran (1-4): pakai pipeline resmi game
--- (cooldown + state + server sync beres semua). Tombol 5 = heal otomatis
--- saat HP < 40%. Daftar tombol bisa diubah lewat _G.HKSkillKeys.
-_G.HKSkillKeys = _G.HKSkillKeys or { "One", "Two", "Three", "Four" }
-_G.HK.autoHeal = true
-local HKVIM = nil
-pcall(function() HKVIM = game:GetService("VirtualInputManager") end)
+-- Skill via hotkey (1-4): hanya kalau target dalam jarak. Heal (5) saat HP<40%.
 task.spawn(function()
     while true do
         if _G.HK.skill and HKVIM then
@@ -393,16 +273,16 @@ task.spawn(function()
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 local inRange = false
                 if mob and mob.Parent and hrp then
-                    local th = mob:FindFirstChild("HumanoidRootPart")
-                        or mob:FindFirstChild("Torso")
-                    if th and (th.Position - hrp.Position).Magnitude
-                        <= (_G.HK.atkRange or 15) then
+                    local th = mobPart(mob)
+                    if th and (th.Position - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
                         inRange = true
                     end
                 end
                 if inRange then
                     for _, kn in ipairs(_G.HKSkillKeys or {}) do
-                        if not _G.HK.skill then break end
+                        if not _G.HK.skill then
+                            break
+                        end
                         HKVIM:SendKeyEvent(true, Enum.KeyCode[kn], false, game)
                         task.wait(0.05)
                         HKVIM:SendKeyEvent(false, Enum.KeyCode[kn], false, game)
@@ -414,13 +294,13 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
+
 task.spawn(function()
     while true do
         if _G.HK.autoHeal and HKVIM then
             pcall(function()
                 local hum = P.Character and P.Character:FindFirstChildOfClass("Humanoid")
-                if hum and hum.MaxHealth > 0
-                    and hum.Health / hum.MaxHealth < 0.4 then
+                if hum and hum.MaxHealth > 0 and hum.Health / hum.MaxHealth < 0.4 then
                     HKVIM:SendKeyEvent(true, Enum.KeyCode.Five, false, game)
                     task.wait(0.05)
                     HKVIM:SendKeyEvent(false, Enum.KeyCode.Five, false, game)
@@ -431,45 +311,43 @@ task.spawn(function()
     end
 end)
 
--- Infinite jump
+-- Infinite jump.
 UIS.JumpRequest:Connect(function()
     if _G.HK.infjump and P.Character then
         local hum = P.Character:FindFirstChildOfClass("Humanoid")
-        if hum then hum:ChangeState(Enum.HumanoidStateType.Jumping) end
+        if hum then
+            hum:ChangeState(Enum.HumanoidStateType.Jumping)
+        end
     end
 end)
 
--- ESP nama + HP
+-- ESP: merah = Humanoid, oranye = attribute (Lv + State).
 task.spawn(function()
     while true do
         if _G.HK.esp then
             pcall(function()
                 for _, d in ipairs(workspace:GetDescendants()) do
-                    if d:IsA("Model") and d ~= P.Character
-                        and not d:FindFirstChild("HK_ESP") then
+                    if d:IsA("Model") and d ~= P.Character and not d:FindFirstChild("HK_ESP") then
                         local skip = false
                         for _, pl in ipairs(game.Players:GetPlayers()) do
-                            if pl.Character == d then skip = true break end
+                            if pl.Character == d then
+                                skip = true
+                                break
+                            end
                         end
                         local label, color = nil, Color3.new(1, 0.35, 0.35)
                         if not skip then
                             local hum = d:FindFirstChildOfClass("Humanoid")
                             if hum and hum.Health > 0 then
                                 label = d.Name .. " " .. tostring(math.floor(hum.Health))
-                            else
-                                local st = d:GetAttribute("State")
-                                if (d:GetAttribute("CanAttack") == true
-                                    or d:GetAttribute("HealthOverride") ~= nil)
-                                    and st ~= "Dead" then
-                                    label = d.Name .. " Lv" .. tostring(d:GetAttribute("Level"))
-                                        .. " " .. tostring(st)
-                                    color = Color3.new(1, 0.6, 0.2)
-                                end
+                            elseif mobAlive(d) then
+                                label = d.Name .. " Lv" .. tostring(d:GetAttribute("Level"))
+                                    .. " " .. tostring(d:GetAttribute("State"))
+                                color = Color3.new(1, 0.6, 0.2)
                             end
                         end
                         if label then
-                            local ador = d:FindFirstChild("HumanoidRootPart")
-                                or d:FindFirstChild("Torso")
+                            local ador = mobPart(d)
                             if ador then
                                 local bb = Instance.new("BillboardGui")
                                 bb.Name = "HK_ESP"
@@ -497,14 +375,17 @@ task.spawn(function()
     end
 end)
 
--- Stealth: potong animasi ayunan secepatnya (pre-render). Damage tidak
--- terpengaruh karena hitungannya di server.
+-- Stealth: potong ayunan pre-render. Damage tetap masuk (server-side).
 RS.RenderStepped:Connect(function()
-    if not (_G.HK and _G.HK.stealth) then return end
+    if not (_G.HK and _G.HK.stealth) then
+        return
+    end
     local ch = P.Character
     local hum = ch and ch:FindFirstChildOfClass("Humanoid")
     local anim = hum and hum:FindFirstChildOfClass("Animator")
-    if not anim then return end
+    if not anim then
+        return
+    end
     for _, tr in ipairs(anim:GetPlayingAnimationTracks()) do
         local id = tr.Animation and tr.Animation.AnimationId or ""
         local num = string.match(id, "(%d+)")
@@ -514,36 +395,125 @@ RS.RenderStepped:Connect(function()
     end
 end)
 
--- Interceptor skill: bungkus Activate tiap skill Ronin supaya argumen ASLI
--- (state + param) yang dipakai game bisa ditangkap saat tombol skill ditekan
--- manual. Hasil tangkapan tersimpan di _G.HKSkillArgs.
-for _, m in ipairs(game.ReplicatedStorage.Classes.Ronin.Skills:GetChildren()) do
-    local ok, data = pcall(require, m)
-    if ok and type(data) == "table" and type(data.Activate) == "function"
-        and not data._HKwrapped then
-        data._HKwrapped = true
-        local orig = data.Activate
-        data.Activate = function(a, b)
-            _G.HKSkillArgs = _G.HKSkillArgs or {}
-            local function shape(v, d)
-                if d > 3 then return type(v) end
-                if type(v) ~= "table" then
-                    return type(v) .. "=" .. tostring(v):sub(1, 40)
+-- Gate loop: gate bersih -> chest se-room -> altar berkah -> room berikut.
+-- Altar terpakai dicatat per sesi.
+_G.HKAltarDone = _G.HKAltarDone or {}
+task.spawn(function()
+    while true do
+        if _G.HK.chest and _G.HKTarget == nil then
+            pcall(function()
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local gen = getGen()
+                    if gen then
+                        local rooms = {}
+                        for _, c in ipairs(gen:GetChildren()) do
+                            local n = string.match(c.Name, "^Room_(%d+)$")
+                            if n and c:IsA("Model") then
+                                local ok, piv = pcall(function() return c:GetPivot() end)
+                                if ok then
+                                    table.insert(rooms, { n = tonumber(n), pos = piv.Position })
+                                end
+                            end
+                        end
+                        table.sort(rooms, function(a, b) return a.n < b.n end)
+                        local function roomOf(pos)
+                            local rn, rd = 0, 1e9
+                            for _, r in ipairs(rooms) do
+                                local dxz = Vector2.new(
+                                    pos.X - r.pos.X, pos.Z - r.pos.Z).Magnitude
+                                if dxz < rd then
+                                    rn, rd = r.n, dxz
+                                end
+                            end
+                            return rn
+                        end
+                        local cur = _G.HKZone.room
+                        local bestIn, bdIn, prIn = nil, 1e9, nil
+                        local bestAny, bdAny, prAny = nil, 1e9, nil
+                        for _, d in ipairs(gen:GetDescendants()) do
+                            if d:IsA("ProximityPrompt") and d.Enabled
+                                and string.find(string.lower(d.ActionText), "loot") then
+                                local m = d.Parent
+                                while m and not m:IsA("Model") do
+                                    m = m.Parent
+                                end
+                                if m then
+                                    local ok, piv = pcall(function() return m:GetPivot() end)
+                                    if ok then
+                                        local dist = (piv.Position - hrp.Position).Magnitude
+                                        if dist < bdAny then
+                                            bestAny, bdAny, prAny = m, dist, d
+                                        end
+                                        if cur and roomOf(piv.Position) == cur and dist < bdIn then
+                                            bestIn, bdIn, prIn = m, dist, d
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        local tgt, pr = bestIn, prIn
+                        if not tgt then
+                            tgt, pr = bestAny, prAny
+                        end
+                        if tgt and pr then
+                            local piv = tgt:GetPivot()
+                            hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                            hrp.Velocity = Vector3.new()
+                            task.wait(0.6)
+                            pcall(function() fireproximityprompt(pr) end)
+                        else
+                            local altar, apr, abd = nil, nil, 1e9
+                            for _, d in ipairs(gen:GetDescendants()) do
+                                if d:IsA("ProximityPrompt") and d.Enabled
+                                    and string.find(string.lower(d.ActionText), "bless") then
+                                    local m = d.Parent
+                                    while m and not m:IsA("Model") do
+                                        m = m.Parent
+                                    end
+                                    if m and not _G.HKAltarDone[m:GetFullName()] then
+                                        local ok, piv = pcall(function() return m:GetPivot() end)
+                                        if ok then
+                                            local dist = (piv.Position - hrp.Position).Magnitude
+                                            if dist < abd then
+                                                altar, abd, apr = m, dist, d
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                            if altar and apr then
+                                _G.HKAltarDone[altar:GetFullName()] = true
+                                local piv = altar:GetPivot()
+                                hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                                hrp.Velocity = Vector3.new()
+                                task.wait(0.6)
+                                pcall(function() fireproximityprompt(apr) end)
+                            elseif cur then
+                                local nxt = nil
+                                for _, r in ipairs(rooms) do
+                                    if r.n > cur and (not nxt or r.n < nxt.n) then
+                                        nxt = r
+                                    end
+                                end
+                                if not nxt then
+                                    nxt = rooms[1]
+                                end
+                                if nxt then
+                                    hrp.CFrame = CFrame.new(nxt.pos.X, nxt.pos.Y + 5, nxt.pos.Z)
+                                    hrp.Velocity = Vector3.new()
+                                end
+                            end
+                        end
+                    end
                 end
-                local s = "{"
-                for k, vv in pairs(v) do
-                    s ..= tostring(k) .. ":" .. shape(vv, d + 1) .. " "
-                    if #s > 300 then break end
-                end
-                return s .. "}"
-            end
-            _G.HKSkillArgs[m.Name] = { a = shape(a, 0), b = shape(b, 0) }
-            return orig(a, b)
+            end)
         end
+        task.wait(2)
     end
-end
+end)
 
--- Anti AFK
+-- Anti AFK.
 pcall(function()
     local VU = game:GetService("VirtualUser")
     P.Idled:Connect(function()
@@ -553,7 +523,7 @@ pcall(function()
     end)
 end)
 
-print("[HK] loops aktif")
+print("[HK] farm v4 aktif (semua OFF)")
 
 
 -- Harta Karun Dungeon | Auto Spin + live preview (gacha SummoningService)
@@ -676,6 +646,67 @@ end)
 print("[HK] spin siap")
 
 
+-- Harta Karun Dungeon | Full-auto dungeon loop
+-- LOBBY -> queue solo -> farm (sistem hover) -> complete (klaim sebisanya)
+-- -> replay -> ulangi. Semua panggilan berisiko di-pcall, server mengabaikan
+-- yang tidak valid. Default MATI, nyalakan dari tab Misc.
+-- _G.HKAuto = { on=false, dungeon="Bandits Den", diff="Normal" }
+
+_G.HKAuto = _G.HKAuto or { on = false, dungeon = "Bandits Den", diff = "Normal" }
+
+task.spawn(function()
+    local function getRF(s, n)
+        local ok, rf = pcall(function()
+            return game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
+                .knit.Services[s].RF[n]
+        end)
+        if ok then return rf end
+    end
+    local sessRF = getRF("DungeonRunService", "GetSessionInfo")
+    local soloRF = getRF("DungeonQueueService", "RequestStartSoloRun")
+    local replayRF = getRF("DungeonRunService", "RequestReplay")
+    local selRF = getRF("DungeonRunService", "SelectChests")
+    local state = "idle"
+    local idleTicks = 0
+    while true do
+        if _G.HKAuto.on and sessRF then
+            pcall(function()
+                local ok, s = pcall(function() return sessRF:InvokeServer() end)
+                local inRun = ok and type(s) == "table" and s.LocationId ~= nil
+                if not inRun then
+                    state = "lobby"
+                    if soloRF and _G.HKAuto.dungeon then
+                        pcall(function()
+                            soloRF:InvokeServer(_G.HKAuto.dungeon, _G.HKAuto.diff)
+                        end)
+                    end
+                else
+                    local phase = tostring(s.Phase)
+                    if phase == "Combat" then
+                        state = "farming"
+                        idleTicks = 0
+                    else
+                        state = "done:" .. phase
+                        idleTicks += 1
+                        if idleTicks == 2 and selRF then
+                            pcall(function() selRF:InvokeServer() end)
+                        end
+                        if idleTicks >= 4 and replayRF then
+                            pcall(function() replayRF:InvokeServer() end)
+                            idleTicks = 0
+                        end
+                    end
+                end
+                _G.HKAuto.state = state
+            end)
+        end
+        task.wait(10)
+    end
+end)
+
+print("[HK] auto dungeon siap (mati default)")
+
+
 -- Harta Karun Dungeon | UI Obsidian (mstudio45/deividcomsono fork)
 -- Butuh _G.HK dari Farm.lua (jalan dulu) Ã¢â‚¬â€ kalau belum ada, dibuatkan default.
 -- Buka/tutup menu: RightShift.
@@ -711,6 +742,8 @@ _G.HKSpin = _G.HKSpin or {
 }
 _G.HKSpinRank = _G.HKSpinRank or
     { Rare = 1, Epic = 2, Legendary = 3, Mythic = 4, Celestial = 5, Exotic = 6 }
+
+_G.HKAuto = _G.HKAuto or { on = false, dungeon = "Bandits Den", diff = "Normal" }
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
 local lib = loadstring(game:HttpGet(repo .. "Library.lua"))()
@@ -757,7 +790,7 @@ C:AddToggle("HKSkill", {
 })
 C:AddToggle("HKHeal", {
     Text = "Auto heal (tombol 5, HP<40%)",
-    Default = _G.HK.autoHeal ~= false,
+    Default = _G.HK.autoHeal == true,
     Callback = function(v) _G.HK.autoHeal = v end,
 })
 C:AddSlider("HKAtkRange", {
@@ -874,12 +907,26 @@ B:AddButton({
         _G.HK.loot = false
         _G.HK.noclip = false
         _G.HK.fly = false
+        _G.HKAuto.on = false
         local hum = game.Players.LocalPlayer.Character
             and game.Players.LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
         if hum then hum.AutoRotate = true end
         lib:Notify({ Title = "Harta Karun", Description = "Semua fitur dimatikan", Time = 3 })
     end,
 })
+local A = MiscTab:AddLeftGroupbox("Full Auto")
+A:AddToggle("HKAutoRun", {
+    Text = "Full-auto dungeon loop",
+    Default = false,
+    Callback = function(v) _G.HKAuto.on = v end,
+})
+A:AddDropdown("HKAutoDiff", {
+    Text = "Difficulty",
+    Values = { "Easy", "Normal" },
+    Default = 2,
+    Callback = function(v) _G.HKAuto.diff = v end,
+})
+A:AddLabel("status auto", true, "HKAutoStatus")
 
 -- ===== TAB SUMMON =====
 local SummonTab = Window:AddTab("Summon", "dices")
@@ -944,6 +991,10 @@ task.spawn(function()
             lib.Options.HKSpinStatus:SetText(
                 "roll:" .. tostring(_G.HKSpin and _G.HKSpin.sessionRolls or 0)
                 .. " | " .. tostring(last))
+            pcall(function()
+                lib.Options.HKAutoStatus:SetText(
+                    "auto:" .. tostring(_G.HKAuto and _G.HKAuto.state or "-"))
+            end)
         end)
         task.wait(1)
     end
