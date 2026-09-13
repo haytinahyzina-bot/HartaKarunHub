@@ -51,24 +51,39 @@ local function getGen()
     return nil
 end
 
-local function nearestMob(hrp)
-    local gen = getGen()
-    if not gen then return nil end
-    local npcs = gen:FindFirstChild("NPCs")
-    if not npcs then return nil end
-    local best, bd = nil, 1e9
-    for _, m in ipairs(npcs:GetChildren()) do
-        if m:IsA("Model") then
-            local hum = m:FindFirstChildOfClass("Humanoid")
-            local th = m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso")
-            if hum and th and hum.Health > 0 then
-                local d = (th.Position - hrp.Position).Magnitude
-                if d < bd then best, bd = m, d end
+-- Cache target: di-scan ulang tiap 0.5 detik (GetDescendants tiap frame
+-- terlalu berat). Mencakup SELURUH model ber-Humanoid di folder Generated,
+-- bukan cuma folder NPCs — jadi mob di Room/Boss arena tidak ke-skip.
+_G.HKTarget = nil
+task.spawn(function()
+    while true do
+        pcall(function()
+            local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local best, bd = nil, 1e9
+                for _, d in ipairs(workspace:GetDescendants()) do
+                    if d:IsA("Humanoid") and d.Health > 0 then
+                        local m = d.Parent
+                        if m and m:IsA("Model") and m ~= P.Character
+                            and string.find(m:GetFullName(), "Generated") then
+                            local th = m:FindFirstChild("HumanoidRootPart")
+                                or m:FindFirstChild("Torso")
+                            if th then
+                                local dist = (th.Position - hrp.Position).Magnitude
+                                if dist < bd then best, bd = m, dist end
+                            end
+                        end
+                    end
+                end
+                _G.HKTarget = best
+                _G.HK.target = best
+                    and (best.Name .. " " .. tostring(math.floor(bd)) .. "st")
+                    or "no mob"
             end
-        end
+        end)
+        task.wait(0.5)
     end
-    return best, bd
-end
+end)
 
 -- Loop utama: hover + speed lock + fly + noclip + auto chest
 RS.Heartbeat:Connect(function()
@@ -108,7 +123,15 @@ RS.Heartbeat:Connect(function()
         end
     end
 
-    local mob, dist = nearestMob(hrp)
+    local mob = _G.HKTarget
+    local mhum = mob and mob.Parent and mob:FindFirstChildOfClass("Humanoid")
+    local dist = 0
+    if mob and mhum and mhum.Health > 0 then
+        local th0 = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
+        if th0 then dist = (th0.Position - hrp.Position).Magnitude end
+    else
+        mob = nil
+    end
     if _G.HK.hover and mob then
         -- Tidur di atas kepala, menghadap ke bawah (CFrame melihat ke mob).
         -- Basic attack tetap kena (jarak ~6.5), melee mob tidak sampai.
