@@ -373,64 +373,43 @@ task.spawn(function()
     end
 end)
 
--- Auto skill beneran: panggil modul skill Ronin langsung (remote Skill
--- tanpa argumen tidak berefek). State + track animasi dibangun per karakter,
--- cooldown dibaca dari tiap skill. Interceptor di bawah tetap belajar dari
--- tekanan manual untuk penyempurnaan.
-_G.HKSkillCD = _G.HKSkillCD or {}
-_G.HKSkillTracks = nil
-_G.HKSkillChar = nil
+-- Auto skill via hotkey beneran (1-4): pakai pipeline resmi game
+-- (cooldown + state + server sync beres semua). Tombol 5 = heal otomatis
+-- saat HP < 40%. Daftar tombol bisa diubah lewat _G.HKSkillKeys.
+_G.HKSkillKeys = _G.HKSkillKeys or { "One", "Two", "Three", "Four" }
+_G.HK.autoHeal = true
+local HKVIM = nil
+pcall(function() HKVIM = game:GetService("VirtualInputManager") end)
 task.spawn(function()
     while true do
-        if _G.HK.skill then
+        if _G.HK.skill and HKVIM then
             pcall(function()
-                local ch = P.Character
-                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
-                local anim = hum and hum:FindFirstChildOfClass("Animator")
-                if anim then
-                    if _G.HKSkillChar ~= ch then
-                        _G.HKSkillChar = ch
-                        _G.HKSkillTracks = {}
-                        local skf = game.ReplicatedStorage.Classes.Ronin.Skills
-                        local af = skf.Parent:FindFirstChild("Skill_Animations")
-                        for _, m in ipairs(skf:GetChildren()) do
-                            local ok, data = pcall(require, m)
-                            if ok and type(data) == "table" and data.AnimationName and af then
-                                local ainst = nil
-                                for _, d in ipairs(af:GetDescendants()) do
-                                    if d:IsA("Animation") and d.Name == data.AnimationName then
-                                        ainst = d
-                                        break
-                                    end
-                                end
-                                if ainst then
-                                    _G.HKSkillTracks[m.Name] = {
-                                        data = data,
-                                        track = anim:LoadAnimation(ainst),
-                                        cd = tonumber(data.Cooldown) or 14,
-                                    }
-                                end
-                            end
-                        end
-                    end
-                    local now = os.clock()
-                    for name, s in pairs(_G.HKSkillTracks or {}) do
-                        if (now - (_G.HKSkillCD[name] or 0)) >= (s.cd + 1) then
-                            local st = { Is_Attacking = false, Animations = {} }
-                            local an = s.data.AnimationName
-                            if an then st.Animations[an] = s.track end
-                            local okc = false
-                            pcall(function() okc = s.data.CanActivate(st) end)
-                            if okc then
-                                local oka = pcall(function() s.data.Activate(st, {}) end)
-                                if oka then _G.HKSkillCD[name] = now end
-                            end
-                        end
-                    end
+                for _, kn in ipairs(_G.HKSkillKeys or {}) do
+                    if not _G.HK.skill then break end
+                    HKVIM:SendKeyEvent(true, Enum.KeyCode[kn], false, game)
+                    task.wait(0.05)
+                    HKVIM:SendKeyEvent(false, Enum.KeyCode[kn], false, game)
+                    task.wait(1.5)
                 end
             end)
         end
-        task.wait(1)
+        task.wait(0.5)
+    end
+end)
+task.spawn(function()
+    while true do
+        if _G.HK.autoHeal and HKVIM then
+            pcall(function()
+                local hum = P.Character and P.Character:FindFirstChildOfClass("Humanoid")
+                if hum and hum.MaxHealth > 0
+                    and hum.Health / hum.MaxHealth < 0.4 then
+                    HKVIM:SendKeyEvent(true, Enum.KeyCode.Five, false, game)
+                    task.wait(0.05)
+                    HKVIM:SendKeyEvent(false, Enum.KeyCode.Five, false, game)
+                end
+            end)
+        end
+        task.wait(2)
     end
 end)
 
@@ -754,9 +733,14 @@ C:AddToggle("HKAtk", {
     Callback = function(v) _G.HK.atk = v end,
 })
 C:AddToggle("HKSkill", {
-    Text = "Auto skill (modul Ronin)",
+    Text = "Auto skill (tombol 1-4)",
     Default = _G.HK.skill,
     Callback = function(v) _G.HK.skill = v end,
+})
+C:AddToggle("HKHeal", {
+    Text = "Auto heal (tombol 5, HP<40%)",
+    Default = _G.HK.autoHeal ~= false,
+    Callback = function(v) _G.HK.autoHeal = v end,
 })
 C:AddSlider("HKAtkRange", {
     Text = "Jarak serang",
