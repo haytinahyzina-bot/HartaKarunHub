@@ -2,7 +2,12 @@
 -- Cara pakai di executor: loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()
 
 -- Harta Karun Dungeon | Master loops (farm hover, combat, esp, movement)
--- Dieksekusi sekali. Semua fitur dikendalikan lewat tabel _G.HK (lihat UI-Obsidian.lua).
+-- Dieksekusi sekali. Semua fitur dikendalikan lewat tabel _G.HK.
+-- Auto-load saat pindah dungeon/tempat (teleport). Aman bila executor
+-- tidak mendukung (di-skip).
+pcall(function()
+    queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()')
+end)
 -- Tested di: Harta Karun Dungeon [UPDATE 1.5], PlaceId 106484206883664.
 
 -- DEFAULT OFF saat execute: semua fitur mati, nyalakan manual dari menu.
@@ -384,12 +389,25 @@ task.spawn(function()
     while true do
         if _G.HK.skill and HKVIM then
             pcall(function()
-                for _, kn in ipairs(_G.HKSkillKeys or {}) do
-                    if not _G.HK.skill then break end
-                    HKVIM:SendKeyEvent(true, Enum.KeyCode[kn], false, game)
-                    task.wait(0.05)
-                    HKVIM:SendKeyEvent(false, Enum.KeyCode[kn], false, game)
-                    task.wait(1.5)
+                local mob = _G.HKTarget
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                local inRange = false
+                if mob and mob.Parent and hrp then
+                    local th = mob:FindFirstChild("HumanoidRootPart")
+                        or mob:FindFirstChild("Torso")
+                    if th and (th.Position - hrp.Position).Magnitude
+                        <= (_G.HK.atkRange or 15) then
+                        inRange = true
+                    end
+                end
+                if inRange then
+                    for _, kn in ipairs(_G.HKSkillKeys or {}) do
+                        if not _G.HK.skill then break end
+                        HKVIM:SendKeyEvent(true, Enum.KeyCode[kn], false, game)
+                        task.wait(0.05)
+                        HKVIM:SendKeyEvent(false, Enum.KeyCode[kn], false, game)
+                        task.wait(1.5)
+                    end
                 end
             end)
         end
