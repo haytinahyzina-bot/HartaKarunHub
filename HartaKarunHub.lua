@@ -51,6 +51,10 @@ local function getGen()
     return nil
 end
 
+-- Daftar pengecualian hover (nama model). Contoh: Galran si NPC lobby.
+-- NPC quest (folder Dialogue_NPCS), dummy latihan, dan karakter pemain
+-- selalu di-skip otomatis.
+_G.HKBlock = _G.HKBlock or { "Galran" }
 -- Cache target PER ZONA: habiskan semua mob di 1 room dulu baru pindah.
 -- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
 -- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
@@ -84,6 +88,15 @@ task.spawn(function()
                         if pl.Character then chars[pl.Character] = true end
                     end
                     local function mobAlive(m)
+                        for _, n in ipairs(_G.HKBlock) do
+                            if m.Name == n then return false end
+                        end
+                        local fn = m:GetFullName()
+                        if string.find(fn, "Dialogue_NPCS")
+                            or string.find(fn, "Combat_Dummies")
+                            or string.find(fn, "PlayerModels") then
+                            return false
+                        end
                         local hum = m:FindFirstChildOfClass("Humanoid")
                         if hum and hum.Health > 0 then return true end
                         local st = m:GetAttribute("State")
@@ -96,22 +109,25 @@ task.spawn(function()
                         return false
                     end
                     for _, d in ipairs(workspace:GetDescendants()) do
-                        if d:IsA("Model") and d ~= P.Character and not chars[d] then
+                        if d:IsA("Model") and d ~= P.Character and not chars[d]
+                            and string.find(d:GetFullName(), "Generated") then
                             if mobAlive(d) then
                                 local th = d:FindFirstChild("HumanoidRootPart")
                                     or d:FindFirstChild("Torso")
                                 if th then
-                                    local rn, rd = 0, 1e9
-                                    for n, pos in pairs(rooms) do
-                                        local dxz = Vector2.new(
-                                            th.Position.X - pos.X,
-                                            th.Position.Z - pos.Z).Magnitude
-                                        if dxz < rd then rn, rd = n, dxz end
-                                    end
-                                    byRoom[rn] = byRoom[rn] or {}
                                     local dist = (th.Position - hrp.Position).Magnitude
-                                    table.insert(byRoom[rn], { m = d, d = dist })
-                                    if dist < bd then best, bestRoom, bd = d, rn, dist end
+                                    if dist < 600 then
+                                        local rn, rd = 0, 1e9
+                                        for n, pos in pairs(rooms) do
+                                            local dxz = Vector2.new(
+                                                th.Position.X - pos.X,
+                                                th.Position.Z - pos.Z).Magnitude
+                                            if dxz < rd then rn, rd = n, dxz end
+                                        end
+                                        byRoom[rn] = byRoom[rn] or {}
+                                        table.insert(byRoom[rn], { m = d, d = dist })
+                                        if dist < bd then best, bestRoom, bd = d, rn, dist end
+                                    end
                                 end
                             end
                         end
@@ -203,9 +219,10 @@ RS.Heartbeat:Connect(function()
     end
     if _G.HK.hover and mob then
         -- Tidur di atas kepala, menghadap ke bawah (CFrame melihat ke mob).
-        -- Basic attack tetap kena (jarak ~6.5), melee mob tidak sampai.
+        -- Basic attack tetap kena, melee mob tidak sampai.
+        -- Batas 600 stud: di luar itu (beda map) tidak dikejar.
         local th = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
-        if th then
+        if th and (th.Position - hrp.Position).Magnitude <= 600 then
             hum.AutoRotate = false
             -- Tinggi dijepit maks 30.
             local h = _G.HK.height
@@ -227,22 +244,42 @@ RS.Heartbeat:Connect(function()
     end
 end)
 
--- Auto chest mandiri: tembak SEMUA prompt "loot" yang enabled di seluruh
--- map tiap 3 detik (tidak perlu dekat, tidak nunggu tidak ada mob).
--- Prompt chest dungeon nempel langsung di Model jadi tidak pakai patokan Part.
+-- Pemburu chest: kalau tidak ada target mob, teleport ke chest "loot" yang
+-- masih enabled, tembak prompt-nya, lanjut. Begitu ada mob, hover farm
+-- langsung ambil alih lagi.
 task.spawn(function()
     while true do
-        if _G.HK.chest then
+        if _G.HK.chest and _G.HKTarget == nil then
             pcall(function()
-                for _, d in ipairs(workspace:GetDescendants()) do
-                    if d:IsA("ProximityPrompt") and d.Enabled
-                        and string.find(string.lower(d.ActionText), "loot") then
-                        pcall(function() fireproximityprompt(d) end)
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local best, bd, bpr = nil, 1e9, nil
+                    for _, d in ipairs(workspace:GetDescendants()) do
+                        if d:IsA("ProximityPrompt") and d.Enabled
+                            and string.find(string.lower(d.ActionText), "loot")
+                            and string.find(d:GetFullName(), "Generated") then
+                            local m = d.Parent
+                            while m and not m:IsA("Model") do m = m.Parent end
+                            if m then
+                                local ok, piv = pcall(function() return m:GetPivot() end)
+                                if ok then
+                                    local dist = (piv.Position - hrp.Position).Magnitude
+                                    if dist < bd then best, bd, bpr = m, dist, d end
+                                end
+                            end
+                        end
+                    end
+                    if best and bpr then
+                        local piv = best:GetPivot()
+                        hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                        hrp.Velocity = Vector3.new()
+                        task.wait(0.6)
+                        pcall(function() fireproximityprompt(bpr) end)
                     end
                 end
             end)
         end
-        task.wait(3)
+        task.wait(2)
     end
 end)
 
