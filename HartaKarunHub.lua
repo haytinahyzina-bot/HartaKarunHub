@@ -123,9 +123,6 @@ task.spawn(function()
         task.wait(0.5)
     end
 end)
-        task.wait(0.5)
-    end
-end)
 
 -- Loop utama: hover + speed lock + fly + noclip + auto chest
 RS.Heartbeat:Connect(function()
