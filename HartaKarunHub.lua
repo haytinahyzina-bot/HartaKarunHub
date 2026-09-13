@@ -53,7 +53,7 @@ end
 
 -- Cache target: di-scan ulang tiap 0.5 detik (GetDescendants tiap frame
 -- terlalu berat). Mencakup SELURUH model ber-Humanoid di folder Generated,
--- bukan cuma folder NPCs — jadi mob di Room/Boss arena tidak ke-skip.
+-- bukan cuma folder NPCs â€” jadi mob di Room/Boss arena tidak ke-skip.
 _G.HKTarget = nil
 task.spawn(function()
     while true do
@@ -295,8 +295,159 @@ end)
 print("[HK] loops aktif")
 
 
+-- Harta Karun Dungeon | Auto Spin + live preview (gacha SummoningService)
+-- Aman: hanya memutar ke slot DUMP yang tidak di-lock. Slot 1 & 2 WAJIB
+-- locked, kalau tidak loop berhenti sendiri. Dapat Exotic -> kunci + stop.
+-- Rate: Normal Exotic 0.05% | Lucky Exotic 0.1% (pity Exotic 500).
+
+_G.HKSpin = _G.HKSpin or {
+    on = false,
+    mode = "LuckyFirst", -- "LuckyFirst" | "Lucky" | "Normal"
+    delay = 1.2,
+    stopExotic = true,
+    stopCelestial = false,
+    dumpSlot = 3,
+    log = {},
+    counts = {},
+    sessionRolls = 0,
+}
+
+pcall(function()
+    game.Players.LocalPlayer.PlayerGui:FindFirstChild("HK_Spin"):Destroy()
+end)
+
+local P = game.Players.LocalPlayer
+local gui = Instance.new("ScreenGui")
+gui.Name = "HK_Spin"
+gui.ResetOnSpawn = false
+gui.DisplayOrder = 998
+gui.Parent = P.PlayerGui
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 250, 0, 250)
+frame.Position = UDim2.new(1, -260, 0, 80)
+frame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+frame.BackgroundTransparency = 0.15
+frame.BorderSizePixel = 0
+frame.Active = true
+frame.Parent = gui
+pcall(function() frame.Draggable = true end)
+
+local title = Instance.new("TextLabel")
+title.Size = UDim2.new(1, 0, 0, 24)
+title.BackgroundTransparency = 1
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.Code
+title.TextSize = 13
+title.Text = "LUCKY SPIN LOG"
+title.Parent = frame
+
+local log = Instance.new("TextLabel")
+log.Size = UDim2.new(1, -10, 1, -60)
+log.Position = UDim2.new(0, 5, 0, 28)
+log.BackgroundTransparency = 1
+log.TextColor3 = Color3.new(1, 1, 1)
+log.Font = Enum.Font.Code
+log.TextSize = 12
+log.TextXAlignment = Enum.TextXAlignment.Left
+log.TextYAlignment = Enum.TextYAlignment.Top
+log.Text = "siap - tekan START"
+log.Parent = frame
+
+local function mkBtn(text, x, color, fn)
+    local b = Instance.new("TextButton")
+    b.Size = UDim2.new(0.5, -7, 0, 24)
+    b.Position = UDim2.new(x, 5, 1, -30)
+    b.BackgroundColor3 = color
+    b.TextColor3 = Color3.new(1, 1, 1)
+    b.Font = Enum.Font.Code
+    b.TextSize = 12
+    b.Text = text
+    b.Parent = frame
+    b.Activated:Connect(function() pcall(fn) end)
+end
+mkBtn("START", 0, Color3.fromRGB(30, 140, 60), function() _G.HKSpin.on = true end)
+mkBtn("STOP", 0.5, Color3.fromRGB(140, 40, 40), function() _G.HKSpin.on = false end)
+
+local RAR = { Rare = "R", Epic = "E", Legendary = "L", Mythic = "M", Celestial = "C", Exotic = "X" }
+
+task.spawn(function()
+    local function getRF(s, n)
+        local ok, rf = pcall(function()
+            return game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
+                .knit.Services[s].RF[n]
+        end)
+        if ok then return rf end
+    end
+    local spin = getRF("SummoningService", "Spin")
+    local gd = getRF("SummoningService", "GetSlotData")
+    local sc = getRF("SummoningService", "GetSpinCounts")
+    local tl = getRF("SummoningService", "ToggleSlotLock")
+    local function refresh()
+        local t = { "sesi:" .. tostring(_G.HKSpin.sessionRolls) }
+        for i = #_G.HKSpin.log, 1, -1 do
+            if #t > 9 then break end
+            table.insert(t, _G.HKSpin.log[i])
+        end
+        log.Text = table.concat(t, "\n")
+    end
+    while true do
+        if _G.HKSpin.on and spin and gd then
+            local okAll, err = pcall(function()
+                local _, slots = pcall(function() return gd:InvokeServer() end)
+                if type(slots) ~= "table" then error("slot?") end
+                if slots.Slots[_G.HKSpin.dumpSlot] == nil then error("no dump") end
+                if slots.SlotLocks[1] ~= true or slots.SlotLocks[2] ~= true then
+                    error("slot 1/2 tidak locked!")
+                end
+                if slots.SlotLocks[_G.HKSpin.dumpSlot] ~= false then
+                    error("dump sudah locked (dapat bagus?)")
+                end
+                if slots.ActiveIndex ~= _G.HKSpin.dumpSlot then
+                    local sw = getRF("SummoningService", "SwitchSlot")
+                    if not sw then error("no switch") end
+                    sw:InvokeServer(_G.HKSpin.dumpSlot)
+                end
+                local _, cnt = pcall(function() return sc:InvokeServer() end)
+                local st = _G.HKSpin.mode
+                if st == "LuckyFirst" then
+                    st = (cnt and cnt.Lucky or 0) > 0 and "Lucky" or "Normal"
+                end
+                if cnt and (cnt[st] or 0) <= 0 then error(st .. " habis") end
+                local res = spin:InvokeServer(st)
+                if type(res) ~= "table" then error("spin?") end
+                _G.HKSpin.sessionRolls += 1
+                local rar = tostring(res.Rarity)
+                _G.HKSpin.counts[rar] = (_G.HKSpin.counts[rar] or 0) + 1
+                table.insert(_G.HKSpin.log,
+                    "[" .. (RAR[rar] or "?") .. "] " .. st:sub(1, 1) .. ":"
+                    .. rar .. " " .. tostring(res.ClassName))
+                if rar == "Exotic" and _G.HKSpin.stopExotic then
+                    if tl then pcall(function() tl:InvokeServer(_G.HKSpin.dumpSlot) end) end
+                    table.insert(_G.HKSpin.log, "EXOTIC! slot dikunci.")
+                    _G.HKSpin.on = false
+                elseif rar == "Celestial" and _G.HKSpin.stopCelestial then
+                    if tl then pcall(function() tl:InvokeServer(_G.HKSpin.dumpSlot) end) end
+                    table.insert(_G.HKSpin.log, "CELESTIAL! slot dikunci.")
+                    _G.HKSpin.on = false
+                end
+                refresh()
+            end)
+            if not okAll then
+                table.insert(_G.HKSpin.log, "STOP: " .. tostring(err):sub(1, 60))
+                _G.HKSpin.on = false
+                refresh()
+            end
+        end
+        task.wait(_G.HKSpin.delay)
+    end
+end)
+
+print("[HK] spin siap")
+
+
 -- Harta Karun Dungeon | UI Obsidian (mstudio45/deividcomsono fork)
--- Butuh _G.HK dari Farm.lua (jalan dulu) — kalau belum ada, dibuatkan default.
+-- Butuh _G.HK dari Farm.lua (jalan dulu) â€” kalau belum ada, dibuatkan default.
 -- Buka/tutup menu: RightShift.
 
 pcall(function()
