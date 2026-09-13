@@ -242,7 +242,7 @@ RS.Heartbeat:Connect(function()
 end)
 
 -- Gate loop (ala video): kalau tidak ada target mob, urus gate yang baru
--- dibersihkan dulu — chest di room itu, lalu altar berkah, baru maju ke
+-- dibersihkan dulu -------- chest di room itu, lalu altar berkah, baru maju ke
 -- room berikutnya buat trigger wave. Begitu ada mob, hover farm ambil alih.
 -- Altar yang sudah dipakai dicatat biar tidak dikunjungi ulang.
 _G.HKAltarDone = _G.HKAltarDone or {}
@@ -345,8 +345,9 @@ task.spawn(function()
                         end
                     end
                 end
-            end)
-        end
+            end
+        end)
+    end
         task.wait(2)
     end
 end)
@@ -679,7 +680,7 @@ print("[HK] spin siap")
 
 
 -- Harta Karun Dungeon | UI Obsidian (mstudio45/deividcomsono fork)
--- Butuh _G.HK dari Farm.lua (jalan dulu) — kalau belum ada, dibuatkan default.
+-- Butuh _G.HK dari Farm.lua (jalan dulu) Ã¢â‚¬â€ kalau belum ada, dibuatkan default.
 -- Buka/tutup menu: RightShift.
 
 pcall(function()
