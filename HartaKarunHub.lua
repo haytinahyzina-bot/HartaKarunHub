@@ -55,7 +55,9 @@ end
 -- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
 -- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
 -- ROOM ITU. Room bersih -> pindah ke room milik mob terdekat global.
--- Mencakup seluruh model ber-Humanoid di folder Generated (kecuali PhantomClone).
+-- Mob di game ini TIDAK pakai Humanoid, tapi pakai attribute:
+--   CanAttack==true dan State~="Dead" = hidup & bisa diserang.
+-- Mencakup seluruh Model di folder Generated (kecuali PhantomClone).
 _G.HKTarget = nil
 _G.HKZone = { room = nil }
 task.spawn(function()
@@ -76,13 +78,19 @@ task.spawn(function()
                     local byRoom = {}
                     local best, bestRoom, bd = nil, nil, 1e9
                     for _, d in ipairs(workspace:GetDescendants()) do
-                        if d:IsA("Humanoid") and d.Health > 0 then
-                            local m = d.Parent
-                            if m and m:IsA("Model") and m ~= P.Character
-                                and string.find(m:GetFullName(), "Generated")
-                                and m.Name ~= "PhantomClone" then
-                                local th = m:FindFirstChild("HumanoidRootPart")
-                                    or m:FindFirstChild("Torso")
+                        if d:IsA("Model") and d ~= P.Character
+                            and string.find(d:GetFullName(), "Generated")
+                            and d.Name ~= "PhantomClone" then
+                            local alive = false
+                            local hum = d:FindFirstChildOfClass("Humanoid")
+                            if hum and hum.Health > 0 then alive = true end
+                            if d:GetAttribute("CanAttack") == true
+                                and d:GetAttribute("State") ~= "Dead" then
+                                alive = true
+                            end
+                            if alive then
+                                local th = d:FindFirstChild("HumanoidRootPart")
+                                    or d:FindFirstChild("Torso")
                                 if th then
                                     local rn, rd = nil, 1e9
                                     for n, pos in pairs(rooms) do
@@ -93,8 +101,8 @@ task.spawn(function()
                                     end
                                     byRoom[rn] = byRoom[rn] or {}
                                     local dist = (th.Position - hrp.Position).Magnitude
-                                    table.insert(byRoom[rn], { m = m, d = dist })
-                                    if dist < bd then best, bestRoom, bd = m, rn, dist end
+                                    table.insert(byRoom[rn], { m = d, d = dist })
+                                    if dist < bd then best, bestRoom, bd = d, rn, dist end
                                 end
                             end
                         end
@@ -163,11 +171,21 @@ RS.Heartbeat:Connect(function()
     end
 
     local mob = _G.HKTarget
-    local mhum = mob and mob.Parent and mob:FindFirstChildOfClass("Humanoid")
     local dist = 0
-    if mob and mhum and mhum.Health > 0 then
-        local th0 = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
-        if th0 then dist = (th0.Position - hrp.Position).Magnitude end
+    if mob and mob.Parent then
+        local okMob = false
+        local mhum = mob:FindFirstChildOfClass("Humanoid")
+        if mhum and mhum.Health > 0 then okMob = true end
+        if mob:GetAttribute("CanAttack") == true
+            and mob:GetAttribute("State") ~= "Dead" then
+            okMob = true
+        end
+        if okMob then
+            local th0 = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
+            if th0 then dist = (th0.Position - hrp.Position).Magnitude end
+        else
+            mob = nil
+        end
     else
         mob = nil
     end
@@ -245,12 +263,22 @@ task.spawn(function()
         if _G.HK.esp then
             pcall(function()
                 for _, d in ipairs(workspace:GetDescendants()) do
-                    if d:IsA("Humanoid") and d.Health > 0 then
-                        local m = d.Parent
-                        if m and m:IsA("Model") and m ~= P.Character
-                            and not m:FindFirstChild("HK_ESP") then
-                            local ador = m:FindFirstChild("HumanoidRootPart")
-                                or m:FindFirstChild("Torso")
+                    if d:IsA("Model") and d ~= P.Character
+                        and not d:FindFirstChild("HK_ESP") then
+                        local label, color = nil, Color3.new(1, 0.35, 0.35)
+                        local hum = d:FindFirstChildOfClass("Humanoid")
+                        if hum and hum.Health > 0 then
+                            label = d.Name .. " " .. tostring(math.floor(hum.Health))
+                        elseif string.find(d:GetFullName(), "Generated")
+                            and d:GetAttribute("CanAttack") == true
+                            and d:GetAttribute("State") ~= "Dead" then
+                            label = d.Name .. " Lv" .. tostring(d:GetAttribute("Level"))
+                                .. " " .. tostring(d:GetAttribute("State"))
+                            color = Color3.new(1, 0.6, 0.2)
+                        end
+                        if label then
+                            local ador = d:FindFirstChild("HumanoidRootPart")
+                                or d:FindFirstChild("Torso")
                             if ador then
                                 local bb = Instance.new("BillboardGui")
                                 bb.Name = "HK_ESP"
@@ -258,15 +286,15 @@ task.spawn(function()
                                 bb.StudsOffset = Vector3.new(0, 3, 0)
                                 bb.AlwaysOnTop = true
                                 bb.Adornee = ador
-                                bb.Parent = m
+                                bb.Parent = d
                                 local tl = Instance.new("TextLabel")
                                 tl.Size = UDim2.new(1, 0, 1, 0)
                                 tl.BackgroundTransparency = 1
-                                tl.TextColor3 = Color3.new(1, 0.35, 0.35)
+                                tl.TextColor3 = color
                                 tl.TextStrokeTransparency = 0
                                 tl.TextSize = 13
                                 tl.Font = Enum.Font.Code
-                                tl.Text = m.Name .. " " .. tostring(math.floor(d.Health))
+                                tl.Text = label
                                 tl.Parent = bb
                             end
                         end
