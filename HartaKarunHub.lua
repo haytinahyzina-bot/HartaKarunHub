@@ -1,6 +1,5 @@
 -- Harta Karun Hub | single-file loader
--- Cara pakai di executor: loadstring(game:HttpGet("https://raw.githubusercontent.com/USERNAME/harta-karun-dungeon/main/HartaKarunHub.lua"))()
--- Ganti USERNAME dengan username GitHub kamu setelah upload.
+-- Cara pakai di executor: loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()
 
 -- Harta Karun Dungeon | Master loops (farm hover, combat, esp, movement)
 -- Dieksekusi sekali. Semua fitur dikendalikan lewat tabel _G.HK (lihat UI-Obsidian.lua).
@@ -26,6 +25,16 @@ _G.HK = _G.HK or {
 
     tick = 0,       -- counter bukti loop hidup
     target = "none",-- target hover saat ini
+    stealth = true, -- serang tanpa animasi ayunan
+}
+
+-- ID animasi ayunan basic attack (Ronin/Animations + OriginalAttacks).
+-- Track yang cocok di-stop tiap frame render -> damage tetap masuk (server-side).
+_G.HKSwingIds = {
+    ["106806110702885"] = true, ["109893308802725"] = true,
+    ["126671356379936"] = true, ["112357005052418"] = true,
+    ["105520255900501"] = true, ["113090603838738"] = true,
+    ["82343948148104"] = true,
 }
 
 local P = game.Players.LocalPlayer
@@ -204,6 +213,52 @@ task.spawn(function()
     end
 end)
 
+-- Stealth: potong animasi ayunan secepatnya (pre-render). Damage tidak
+-- terpengaruh karena hitungannya di server.
+RS.RenderStepped:Connect(function()
+    if not (_G.HK and _G.HK.stealth) then return end
+    local ch = P.Character
+    local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+    local anim = hum and hum:FindFirstChildOfClass("Animator")
+    if not anim then return end
+    for _, tr in ipairs(anim:GetPlayingAnimationTracks()) do
+        local id = tr.Animation and tr.Animation.AnimationId or ""
+        local num = string.match(id, "(%d+)")
+        if num and _G.HKSwingIds[num] then
+            pcall(function() tr:Stop(0) end)
+        end
+    end
+end)
+
+-- Interceptor skill: bungkus Activate tiap skill Ronin supaya argumen ASLI
+-- (state + param) yang dipakai game bisa ditangkap saat tombol skill ditekan
+-- manual. Hasil tangkapan tersimpan di _G.HKSkillArgs.
+for _, m in ipairs(game.ReplicatedStorage.Classes.Ronin.Skills:GetChildren()) do
+    local ok, data = pcall(require, m)
+    if ok and type(data) == "table" and type(data.Activate) == "function"
+        and not data._HKwrapped then
+        data._HKwrapped = true
+        local orig = data.Activate
+        data.Activate = function(a, b)
+            _G.HKSkillArgs = _G.HKSkillArgs or {}
+            local function shape(v, d)
+                if d > 3 then return type(v) end
+                if type(v) ~= "table" then
+                    return type(v) .. "=" .. tostring(v):sub(1, 40)
+                end
+                local s = "{"
+                for k, vv in pairs(v) do
+                    s ..= tostring(k) .. ":" .. shape(vv, d + 1) .. " "
+                    if #s > 300 then break end
+                end
+                return s .. "}"
+            end
+            _G.HKSkillArgs[m.Name] = { a = shape(a, 0), b = shape(b, 0) }
+            return orig(a, b)
+        end
+    end
+end
+
 -- Anti AFK
 pcall(function()
     local VU = game:GetService("VirtualUser")
@@ -234,7 +289,7 @@ _G.HK = _G.HK or {
     atk = true, skill = false, rate = 0.25,
     esp = true, loot = true,
     speed = 32, noclip = false, infjump = true, fly = false, flyspeed = 60,
-    tick = 0, target = "none",
+    tick = 0, target = "none", stealth = true,
 }
 
 local repo = "https://raw.githubusercontent.com/deividcomsono/Obsidian/main/"
@@ -285,6 +340,12 @@ C2:AddSlider("HKRate", {
     Text = "Jeda attack",
     Default = _G.HK.rate, Min = 0.1, Max = 1, Rounding = 2, Suffix = "s",
     Callback = function(v) _G.HK.rate = v end,
+})
+local C3 = CombatTab:AddLeftGroupbox("Stealth")
+C3:AddToggle("HKStealth", {
+    Text = "Serang tanpa animasi",
+    Default = _G.HK.stealth,
+    Callback = function(v) _G.HK.stealth = v end,
 })
 
 -- ===== TAB VISUAL =====
