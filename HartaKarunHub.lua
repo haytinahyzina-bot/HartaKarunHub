@@ -5,28 +5,25 @@
 -- Dieksekusi sekali. Semua fitur dikendalikan lewat tabel _G.HK (lihat UI-Obsidian.lua).
 -- Tested di: Harta Karun Dungeon [UPDATE 1.5], PlaceId 106484206883664.
 
-_G.HK = _G.HK or {
-    hover = true,   -- hover tidur di atas kepala mob terdekat
-    height = 6.5,   -- jarak vertikal di atas mob (4 - 12)
-    chest = true,   -- auto loot chest bertipe "loot" dalam 20 stud
-
-    atk = true,     -- spam basic attack
-    skill = false,  -- spam skill
-    rate = 0.25,    -- jeda antar attack (detik)
-
-    esp = true,     -- ESP nama + HP mob
-    loot = true,    -- auto loot (dipakai bareng chest)
-
-    speed = 32,     -- walkspeed target (dipaksa tiap frame)
-    noclip = false,
-    infjump = true,
-    fly = false,
-    flyspeed = 60,
-
-    tick = 0,       -- counter bukti loop hidup
-    target = "none",-- target hover saat ini
-    stealth = true, -- serang tanpa animasi ayunan
-}
+-- DEFAULT OFF saat execute: semua fitur mati, nyalakan manual dari menu.
+_G.HK = _G.HK or {}
+_G.HK.hover = false
+_G.HK.height = _G.HK.height or 6.5
+_G.HK.chest = false
+_G.HK.atk = false
+_G.HK.atkRange = _G.HK.atkRange or 15
+_G.HK.skill = false
+_G.HK.rate = _G.HK.rate or 0.25
+_G.HK.esp = false
+_G.HK.loot = false
+_G.HK.speed = 28
+_G.HK.noclip = false
+_G.HK.infjump = false
+_G.HK.fly = false
+_G.HK.flyspeed = _G.HK.flyspeed or 60
+_G.HK.tick = 0
+_G.HK.target = "none"
+_G.HK.stealth = false
 
 -- ID animasi ayunan basic attack (Ronin/Animations + OriginalAttacks).
 -- Track yang cocok di-stop tiap frame render -> damage tetap masuk (server-side).
@@ -244,37 +241,108 @@ RS.Heartbeat:Connect(function()
     end
 end)
 
--- Pemburu chest: kalau tidak ada target mob, teleport ke chest "loot" yang
--- masih enabled, tembak prompt-nya, lanjut. Begitu ada mob, hover farm
--- langsung ambil alih lagi.
+-- Gate loop (ala video): kalau tidak ada target mob, urus gate yang baru
+-- dibersihkan dulu â€” chest di room itu, lalu altar berkah, baru maju ke
+-- room berikutnya buat trigger wave. Begitu ada mob, hover farm ambil alih.
+-- Altar yang sudah dipakai dicatat biar tidak dikunjungi ulang.
+_G.HKAltarDone = _G.HKAltarDone or {}
 task.spawn(function()
     while true do
         if _G.HK.chest and _G.HKTarget == nil then
             pcall(function()
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then
-                    local best, bd, bpr = nil, 1e9, nil
-                    for _, d in ipairs(workspace:GetDescendants()) do
-                        if d:IsA("ProximityPrompt") and d.Enabled
-                            and string.find(string.lower(d.ActionText), "loot")
-                            and string.find(d:GetFullName(), "Generated") then
-                            local m = d.Parent
-                            while m and not m:IsA("Model") do m = m.Parent end
-                            if m then
-                                local ok, piv = pcall(function() return m:GetPivot() end)
+                    local gen = getGen()
+                    if gen then
+                        local rooms = {}
+                        for _, c in ipairs(gen:GetChildren()) do
+                            local n = string.match(c.Name, "^Room_(%d+)$")
+                            if n and c:IsA("Model") then
+                                local ok, piv = pcall(function() return c:GetPivot() end)
                                 if ok then
-                                    local dist = (piv.Position - hrp.Position).Magnitude
-                                    if dist < bd then best, bd, bpr = m, dist, d end
+                                    table.insert(rooms, { n = tonumber(n), pos = piv.Position })
                                 end
                             end
                         end
-                    end
-                    if best and bpr then
-                        local piv = best:GetPivot()
-                        hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
-                        hrp.Velocity = Vector3.new()
-                        task.wait(0.6)
-                        pcall(function() fireproximityprompt(bpr) end)
+                        table.sort(rooms, function(a, b) return a.n < b.n end)
+                        local function roomOf(pos)
+                            local rn, rd = 0, 1e9
+                            for _, r in ipairs(rooms) do
+                                local dxz = Vector2.new(
+                                    pos.X - r.pos.X, pos.Z - r.pos.Z).Magnitude
+                                if dxz < rd then rn, rd = r.n, dxz end
+                            end
+                            return rn
+                        end
+                        local cur = _G.HKZone.room
+                        local bestIn, bdIn, prIn = nil, 1e9, nil
+                        local bestAny, bdAny, prAny = nil, 1e9, nil
+                        for _, d in ipairs(gen:GetDescendants()) do
+                            if d:IsA("ProximityPrompt") and d.Enabled
+                                and string.find(string.lower(d.ActionText), "loot") then
+                                local m = d.Parent
+                                while m and not m:IsA("Model") do m = m.Parent end
+                                if m then
+                                    local ok, piv = pcall(function() return m:GetPivot() end)
+                                    if ok then
+                                        local dist = (piv.Position - hrp.Position).Magnitude
+                                        if dist < bdAny then
+                                            bestAny, bdAny, prAny = m, dist, d
+                                        end
+                                        if cur and roomOf(piv.Position) == cur
+                                            and dist < bdIn then
+                                            bestIn, bdIn, prIn = m, dist, d
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                        local tgt, pr = bestIn, prIn
+                        if not tgt then tgt, pr = bestAny, prAny end
+                        if tgt and pr then
+                            local piv = tgt:GetPivot()
+                            hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                            hrp.Velocity = Vector3.new()
+                            task.wait(0.6)
+                            pcall(function() fireproximityprompt(pr) end)
+                        else
+                            local altar, apr = nil, nil
+                            local abd = 1e9
+                            for _, d in ipairs(gen:GetDescendants()) do
+                                if d:IsA("ProximityPrompt") and d.Enabled
+                                    and string.find(string.lower(d.ActionText), "bless") then
+                                    local m = d.Parent
+                                    while m and not m:IsA("Model") do m = m.Parent end
+                                    if m and not _G.HKAltarDone[m:GetFullName()] then
+                                        local ok, piv = pcall(function() return m:GetPivot() end)
+                                        if ok then
+                                            if cur and roomOf(piv.Position) ~= cur then
+                                                -- utamakan altar satu room, tapi ambil juga kalau dekat
+                                            end
+                                            local dist = (piv.Position - hrp.Position).Magnitude
+                                            if dist < abd then altar, abd, apr = m, dist, d end
+                                        end
+                                    end
+                                end
+                            end
+                            if altar and apr then
+                                _G.HKAltarDone[altar:GetFullName()] = true
+                                local piv = altar:GetPivot()
+                                hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                                hrp.Velocity = Vector3.new()
+                                task.wait(0.6)
+                                pcall(function() fireproximityprompt(apr) end)
+                            elseif cur then
+                            local nxt = nil
+                            for _, r in ipairs(rooms) do
+                                if r.n > cur and (not nxt or r.n < nxt.n) then nxt = r end
+                            end
+                            if not nxt then nxt = rooms[1] end
+                            if nxt then
+                                hrp.CFrame = CFrame.new(nxt.pos.X, nxt.pos.Y + 5, nxt.pos.Z)
+                                hrp.Velocity = Vector3.new()
+                            end
+                        end
                     end
                 end
             end)
@@ -283,23 +351,85 @@ task.spawn(function()
     end
 end)
 
--- Spam attack
+-- Spam attack: hanya menyerang kalau ada target dalam jarak atkRange.
 task.spawn(function()
     while true do
         if _G.HK.atk then
-            pcall(function() Inputs.Attack:FireServer() end)
+            pcall(function()
+                local mob = _G.HKTarget
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                if mob and mob.Parent and hrp then
+                    local th = mob:FindFirstChild("HumanoidRootPart")
+                        or mob:FindFirstChild("Torso")
+                    if th and (th.Position - hrp.Position).Magnitude
+                        <= (_G.HK.atkRange or 15) then
+                        Inputs.Attack:FireServer()
+                    end
+                end
+            end)
         end
         task.wait(_G.HK.rate)
     end
 end)
 
--- Spam skill
+-- Auto skill beneran: panggil modul skill Ronin langsung (remote Skill
+-- tanpa argumen tidak berefek). State + track animasi dibangun per karakter,
+-- cooldown dibaca dari tiap skill. Interceptor di bawah tetap belajar dari
+-- tekanan manual untuk penyempurnaan.
+_G.HKSkillCD = _G.HKSkillCD or {}
+_G.HKSkillTracks = nil
+_G.HKSkillChar = nil
 task.spawn(function()
     while true do
         if _G.HK.skill then
-            pcall(function() Inputs.Skill:FireServer() end)
+            pcall(function()
+                local ch = P.Character
+                local hum = ch and ch:FindFirstChildOfClass("Humanoid")
+                local anim = hum and hum:FindFirstChildOfClass("Animator")
+                if anim then
+                    if _G.HKSkillChar ~= ch then
+                        _G.HKSkillChar = ch
+                        _G.HKSkillTracks = {}
+                        local skf = game.ReplicatedStorage.Classes.Ronin.Skills
+                        local af = skf.Parent:FindFirstChild("Skill_Animations")
+                        for _, m in ipairs(skf:GetChildren()) do
+                            local ok, data = pcall(require, m)
+                            if ok and type(data) == "table" and data.AnimationName and af then
+                                local ainst = nil
+                                for _, d in ipairs(af:GetDescendants()) do
+                                    if d:IsA("Animation") and d.Name == data.AnimationName then
+                                        ainst = d
+                                        break
+                                    end
+                                end
+                                if ainst then
+                                    _G.HKSkillTracks[m.Name] = {
+                                        data = data,
+                                        track = anim:LoadAnimation(ainst),
+                                        cd = tonumber(data.Cooldown) or 14,
+                                    }
+                                end
+                            end
+                        end
+                    end
+                    local now = os.clock()
+                    for name, s in pairs(_G.HKSkillTracks or {}) do
+                        if (now - (_G.HKSkillCD[name] or 0)) >= (s.cd + 1) then
+                            local st = { Is_Attacking = false, Animations = {} }
+                            local an = s.data.AnimationName
+                            if an then st.Animations[an] = s.track end
+                            local okc = false
+                            pcall(function() okc = s.data.CanActivate(st) end)
+                            if okc then
+                                local oka = pcall(function() s.data.Activate(st, {}) end)
+                                if oka then _G.HKSkillCD[name] = now end
+                            end
+                        end
+                    end
+                end
+            end)
         end
-        task.wait(1.2)
+        task.wait(1)
     end
 end)
 
@@ -560,13 +690,21 @@ if _G.HKLib then
     _G.HKLib = nil
 end
 
-_G.HK = _G.HK or {
-    hover = true, height = 6.5, chest = true,
-    atk = true, skill = false, rate = 0.25,
-    esp = true, loot = true,
-    speed = 32, noclip = false, infjump = true, fly = false, flyspeed = 60,
-    tick = 0, target = "none", stealth = true,
-}
+_G.HK.hover = false
+_G.HK.atk = false
+_G.HK.skill = false
+_G.HK.esp = false
+_G.HK.loot = false
+_G.HK.chest = false
+_G.HK.stealth = false
+_G.HK.infjump = false
+_G.HK.height = _G.HK.height or 6.5
+_G.HK.rate = _G.HK.rate or 0.25
+_G.HK.atkRange = _G.HK.atkRange or 15
+_G.HK.speed = _G.HK.speed or 32
+_G.HK.flyspeed = _G.HK.flyspeed or 60
+_G.HK.noclip = false
+_G.HK.fly = false
 
 _G.HKSpin = _G.HKSpin or {
     on = false, mode = "LuckyFirst", delay = 1.2,
@@ -615,9 +753,14 @@ C:AddToggle("HKAtk", {
     Callback = function(v) _G.HK.atk = v end,
 })
 C:AddToggle("HKSkill", {
-    Text = "Spam skill",
+    Text = "Auto skill (modul Ronin)",
     Default = _G.HK.skill,
     Callback = function(v) _G.HK.skill = v end,
+})
+C:AddSlider("HKAtkRange", {
+    Text = "Jarak serang",
+    Default = _G.HK.atkRange or 15, Min = 5, Max = 40, Rounding = 0, Suffix = "st",
+    Callback = function(v) _G.HK.atkRange = v end,
 })
 local C2 = CombatTab:AddLeftGroupbox("Kecepatan")
 C2:AddSlider("HKRate", {
