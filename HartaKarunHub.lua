@@ -55,9 +55,11 @@ end
 -- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
 -- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
 -- ROOM ITU. Room bersih -> pindah ke room milik mob terdekat global.
--- Mob di game ini TIDAK pakai Humanoid, tapi pakai attribute:
---   CanAttack==true dan State~="Dead" = hidup & bisa diserang.
--- Mencakup seluruh Model di folder Generated (kecuali PhantomClone).
+-- Aturan hidup (TANPA filter nama/jenis):
+--   Humanoid.Health > 0 ATAU
+--   (CanAttack == true dan State ~= "Dead") ATAU
+--   (punya attribute HealthOverride dan State ~= "Dead").
+-- Satu-satunya yang di-skip: karakter pemain (sendiri + pemain lain).
 _G.HKTarget = nil
 _G.HKZone = { room = nil }
 task.spawn(function()
@@ -77,22 +79,29 @@ task.spawn(function()
                     end
                     local byRoom = {}
                     local best, bestRoom, bd = nil, nil, 1e9
+                    local chars = {}
+                    for _, pl in ipairs(game.Players:GetPlayers()) do
+                        if pl.Character then chars[pl.Character] = true end
+                    end
+                    local function mobAlive(m)
+                        local hum = m:FindFirstChildOfClass("Humanoid")
+                        if hum and hum.Health > 0 then return true end
+                        local st = m:GetAttribute("State")
+                        if m:GetAttribute("CanAttack") == true and st ~= "Dead" then
+                            return true
+                        end
+                        if m:GetAttribute("HealthOverride") ~= nil and st ~= "Dead" then
+                            return true
+                        end
+                        return false
+                    end
                     for _, d in ipairs(workspace:GetDescendants()) do
-                        if d:IsA("Model") and d ~= P.Character
-                            and string.find(d:GetFullName(), "Generated")
-                            and d.Name ~= "PhantomClone" then
-                            local alive = false
-                            local hum = d:FindFirstChildOfClass("Humanoid")
-                            if hum and hum.Health > 0 then alive = true end
-                            if d:GetAttribute("CanAttack") == true
-                                and d:GetAttribute("State") ~= "Dead" then
-                                alive = true
-                            end
-                            if alive then
+                        if d:IsA("Model") and d ~= P.Character and not chars[d] then
+                            if mobAlive(d) then
                                 local th = d:FindFirstChild("HumanoidRootPart")
                                     or d:FindFirstChild("Torso")
                                 if th then
-                                    local rn, rd = nil, 1e9
+                                    local rn, rd = 0, 1e9
                                     for n, pos in pairs(rooms) do
                                         local dxz = Vector2.new(
                                             th.Position.X - pos.X,
@@ -176,8 +185,11 @@ RS.Heartbeat:Connect(function()
         local okMob = false
         local mhum = mob:FindFirstChildOfClass("Humanoid")
         if mhum and mhum.Health > 0 then okMob = true end
-        if mob:GetAttribute("CanAttack") == true
-            and mob:GetAttribute("State") ~= "Dead" then
+        local mst = mob:GetAttribute("State")
+        if mob:GetAttribute("CanAttack") == true and mst ~= "Dead" then
+            okMob = true
+        end
+        if mob:GetAttribute("HealthOverride") ~= nil and mst ~= "Dead" then
             okMob = true
         end
         if okMob then
@@ -265,16 +277,25 @@ task.spawn(function()
                 for _, d in ipairs(workspace:GetDescendants()) do
                     if d:IsA("Model") and d ~= P.Character
                         and not d:FindFirstChild("HK_ESP") then
+                        local skip = false
+                        for _, pl in ipairs(game.Players:GetPlayers()) do
+                            if pl.Character == d then skip = true break end
+                        end
                         local label, color = nil, Color3.new(1, 0.35, 0.35)
-                        local hum = d:FindFirstChildOfClass("Humanoid")
-                        if hum and hum.Health > 0 then
-                            label = d.Name .. " " .. tostring(math.floor(hum.Health))
-                        elseif string.find(d:GetFullName(), "Generated")
-                            and d:GetAttribute("CanAttack") == true
-                            and d:GetAttribute("State") ~= "Dead" then
-                            label = d.Name .. " Lv" .. tostring(d:GetAttribute("Level"))
-                                .. " " .. tostring(d:GetAttribute("State"))
-                            color = Color3.new(1, 0.6, 0.2)
+                        if not skip then
+                            local hum = d:FindFirstChildOfClass("Humanoid")
+                            if hum and hum.Health > 0 then
+                                label = d.Name .. " " .. tostring(math.floor(hum.Health))
+                            else
+                                local st = d:GetAttribute("State")
+                                if (d:GetAttribute("CanAttack") == true
+                                    or d:GetAttribute("HealthOverride") ~= nil)
+                                    and st ~= "Dead" then
+                                    label = d.Name .. " Lv" .. tostring(d:GetAttribute("Level"))
+                                        .. " " .. tostring(st)
+                                    color = Color3.new(1, 0.6, 0.2)
+                                end
+                            end
                         end
                         if label then
                             local ador = d:FindFirstChild("HumanoidRootPart")
