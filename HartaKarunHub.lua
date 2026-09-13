@@ -207,9 +207,10 @@ RS.Heartbeat:Connect(function()
         local th = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
         if th then
             hum.AutoRotate = false
-            -- Tinggi dijepit maks 8: basic attack tidak sampai kalau lebih tinggi.
+            -- Tinggi dijepit maks 30.
             local h = _G.HK.height
-            if h > 8 then h = 8 end
+            if h > 30 then h = 30 end
+            if h < 4 then h = 4 end
             hrp.CFrame = CFrame.new(th.Position + Vector3.new(0, h, 0), th.Position)
             hrp.Velocity = Vector3.new()
             hrp.RotVelocity = Vector3.new()
@@ -223,21 +224,25 @@ RS.Heartbeat:Connect(function()
         else
             _G.HK.target = "no mob"
         end
-        if _G.HK.chest and not mob then
-            local gen = getGen()
-            if gen then
-                for _, d in ipairs(gen:GetDescendants()) do
+    end
+end)
+
+-- Auto chest mandiri: tembak SEMUA prompt "loot" yang enabled di seluruh
+-- map tiap 3 detik (tidak perlu dekat, tidak nunggu tidak ada mob).
+-- Prompt chest dungeon nempel langsung di Model jadi tidak pakai patokan Part.
+task.spawn(function()
+    while true do
+        if _G.HK.chest then
+            pcall(function()
+                for _, d in ipairs(workspace:GetDescendants()) do
                     if d:IsA("ProximityPrompt") and d.Enabled
                         and string.find(string.lower(d.ActionText), "loot") then
-                        local part = d.Parent
-                        while part and not part:IsA("BasePart") do part = part.Parent end
-                        if part and (part.Position - hrp.Position).Magnitude < 20 then
-                            pcall(function() fireproximityprompt(d) end)
-                        end
+                        pcall(function() fireproximityprompt(d) end)
                     end
                 end
-            end
+            end)
         end
+        task.wait(3)
     end
 end)
 
@@ -554,8 +559,8 @@ FarmL:AddToggle("HKHover", {
     Callback = function(v) _G.HK.hover = v end,
 })
 FarmL:AddSlider("HKHeight", {
-    Text = "Tinggi hover (maks efektif 8)",
-    Default = math.min(_G.HK.height, 8), Min = 4, Max = 8, Rounding = 1,
+    Text = "Tinggi hover",
+    Default = math.min(_G.HK.height, 30), Min = 4, Max = 30, Rounding = 1,
     Callback = function(v) _G.HK.height = v end,
 })
 FarmL:AddToggle("HKChest", {
