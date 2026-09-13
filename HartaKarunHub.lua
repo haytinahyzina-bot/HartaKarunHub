@@ -51,36 +51,78 @@ local function getGen()
     return nil
 end
 
--- Cache target: di-scan ulang tiap 0.5 detik (GetDescendants tiap frame
--- terlalu berat). Mencakup SELURUH model ber-Humanoid di folder Generated,
--- bukan cuma folder NPCs â€” jadi mob di Room/Boss arena tidak ke-skip.
+-- Cache target PER ZONA: habiskan semua mob di 1 room dulu baru pindah.
+-- Tiap 0.5 detik: petakan mob hidup ke Room_%d+ terdekat (jarak XZ dari
+-- pivot room). Selama room aktif masih ada mob, target = mob terdekat DI
+-- ROOM ITU. Room bersih -> pindah ke room milik mob terdekat global.
+-- Mencakup seluruh model ber-Humanoid di folder Generated (kecuali PhantomClone).
 _G.HKTarget = nil
+_G.HKZone = { room = nil }
 task.spawn(function()
     while true do
         pcall(function()
             local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
             if hrp then
-                local best, bd = nil, 1e9
-                for _, d in ipairs(workspace:GetDescendants()) do
-                    if d:IsA("Humanoid") and d.Health > 0 then
-                        local m = d.Parent
-                        if m and m:IsA("Model") and m ~= P.Character
-                            and string.find(m:GetFullName(), "Generated") then
-                            local th = m:FindFirstChild("HumanoidRootPart")
-                                or m:FindFirstChild("Torso")
-                            if th then
-                                local dist = (th.Position - hrp.Position).Magnitude
-                                if dist < bd then best, bd = m, dist end
+                local gen = getGen()
+                if gen then
+                    local rooms = {}
+                    for _, c in ipairs(gen:GetChildren()) do
+                        local n = string.match(c.Name, "^Room_(%d+)$")
+                        if n and c:IsA("Model") then
+                            local ok, piv = pcall(function() return c:GetPivot() end)
+                            if ok then rooms[tonumber(n)] = piv.Position end
+                        end
+                    end
+                    local byRoom = {}
+                    local best, bestRoom, bd = nil, nil, 1e9
+                    for _, d in ipairs(workspace:GetDescendants()) do
+                        if d:IsA("Humanoid") and d.Health > 0 then
+                            local m = d.Parent
+                            if m and m:IsA("Model") and m ~= P.Character
+                                and string.find(m:GetFullName(), "Generated")
+                                and m.Name ~= "PhantomClone" then
+                                local th = m:FindFirstChild("HumanoidRootPart")
+                                    or m:FindFirstChild("Torso")
+                                if th then
+                                    local rn, rd = nil, 1e9
+                                    for n, pos in pairs(rooms) do
+                                        local dxz = Vector2.new(
+                                            th.Position.X - pos.X,
+                                            th.Position.Z - pos.Z).Magnitude
+                                        if dxz < rd then rn, rd = n, dxz end
+                                    end
+                                    byRoom[rn] = byRoom[rn] or {}
+                                    local dist = (th.Position - hrp.Position).Magnitude
+                                    table.insert(byRoom[rn], { m = m, d = dist })
+                                    if dist < bd then best, bestRoom, bd = m, rn, dist end
+                                end
                             end
                         end
                     end
+                    local cur = _G.HKZone.room
+                    local tgt = nil
+                    if cur and byRoom[cur] and #byRoom[cur] > 0 then
+                        table.sort(byRoom[cur], function(a, b) return a.d < b.d end)
+                        tgt = byRoom[cur][1]
+                    elseif best then
+                        _G.HKZone.room = bestRoom
+                        tgt = { m = best, d = bd }
+                    else
+                        _G.HKZone.room = nil
+                    end
+                    _G.HKTarget = tgt and tgt.m or nil
+                    if tgt then
+                        _G.HK.target = "R" .. tostring(_G.HKZone.room) .. " "
+                            .. tgt.m.Name .. " " .. tostring(math.floor(tgt.d)) .. "st"
+                    else
+                        _G.HK.target = "no mob"
+                    end
                 end
-                _G.HKTarget = best
-                _G.HK.target = best
-                    and (best.Name .. " " .. tostring(math.floor(bd)) .. "st")
-                    or "no mob"
             end
         end)
+        task.wait(0.5)
+    end
+end)
         task.wait(0.5)
     end
 end)
@@ -138,7 +180,10 @@ RS.Heartbeat:Connect(function()
         local th = mob:FindFirstChild("HumanoidRootPart") or mob:FindFirstChild("Torso")
         if th then
             hum.AutoRotate = false
-            hrp.CFrame = CFrame.new(th.Position + Vector3.new(0, _G.HK.height, 0), th.Position)
+            -- Tinggi dijepit maks 8: basic attack tidak sampai kalau lebih tinggi.
+            local h = _G.HK.height
+            if h > 8 then h = 8 end
+            hrp.CFrame = CFrame.new(th.Position + Vector3.new(0, h, 0), th.Position)
             hrp.Velocity = Vector3.new()
             hrp.RotVelocity = Vector3.new()
             _G.HK.target = mob.Name .. " " .. tostring(math.floor(dist)) .. "st"
@@ -511,8 +556,8 @@ FarmL:AddToggle("HKHover", {
     Callback = function(v) _G.HK.hover = v end,
 })
 FarmL:AddSlider("HKHeight", {
-    Text = "Tinggi hover",
-    Default = _G.HK.height, Min = 4, Max = 12, Rounding = 1,
+    Text = "Tinggi hover (maks efektif 8)",
+    Default = math.min(_G.HK.height, 8), Min = 4, Max = 8, Rounding = 1,
     Callback = function(v) _G.HK.height = v end,
 })
 FarmL:AddToggle("HKChest", {
