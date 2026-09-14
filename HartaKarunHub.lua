@@ -429,8 +429,11 @@ task.spawn(function()
                             return rn
                         end
                         local cur = _G.HKZone.room
-                        local bestIn, bdIn, prIn = nil, 1e9, nil
-                        local bestAny, bdAny, prAny = nil, 1e9, nil
+                        -- Chest BERURUTAN per room (gate 1 dulu!): ada chest
+                        -- altar yang cuma bisa dibuka kalau chest gate
+                        -- sebelumnya sudah diambil. Tiap chest DITUNGGU
+                        -- sampai benar kebuka (Enabled=false) baru lanjut.
+                        local byRoom = {}
                         for _, d in ipairs(gen:GetDescendants()) do
                             if d:IsA("ProximityPrompt") and d.Enabled
                                 and string.find(string.lower(d.ActionText), "loot") then
@@ -441,27 +444,42 @@ task.spawn(function()
                                 if m then
                                     local ok, piv = pcall(function() return m:GetPivot() end)
                                     if ok then
-                                        local dist = (piv.Position - hrp.Position).Magnitude
-                                        if dist < bdAny then
-                                            bestAny, bdAny, prAny = m, dist, d
-                                        end
-                                        if cur and roomOf(piv.Position) == cur and dist < bdIn then
-                                            bestIn, bdIn, prIn = m, dist, d
-                                        end
+                                        local rn = roomOf(piv.Position)
+                                        byRoom[rn] = byRoom[rn] or {}
+                                        table.insert(byRoom[rn], { m = m, pr = d, piv = piv })
                                     end
                                 end
                             end
                         end
-                        local tgt, pr = bestIn, prIn
-                        if not tgt then
-                            tgt, pr = bestAny, prAny
+                        local order = {}
+                        for rn in pairs(byRoom) do
+                            table.insert(order, rn)
+                        end
+                        table.sort(order)
+                        local tgt, pr = nil, nil
+                        if #order > 0 then
+                            local first = byRoom[order[1]]
+                            table.sort(first, function(a, b)
+                                local da = (a.piv.Position - hrp.Position).Magnitude
+                                local db = (b.piv.Position - hrp.Position).Magnitude
+                                return da < db
+                            end)
+                            tgt, pr = first[1].m, first[1].pr
                         end
                         if tgt and pr then
                             local piv = tgt:GetPivot()
                             hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
                             hrp.Velocity = Vector3.new()
-                            task.wait(0.6)
-                            pcall(function() fireproximityprompt(pr) end)
+                            for i = 1, 10 do
+                                task.wait(0.7)
+                                if not pr.Enabled then
+                                    break
+                                end
+                                pcall(function() fireproximityprompt(pr) end)
+                                if _G.HKTarget ~= nil then
+                                    break
+                                end
+                            end
                         else
                             local altar, apr, abd = nil, nil, 1e9
                             for _, d in ipairs(gen:GetDescendants()) do
@@ -653,6 +671,7 @@ print("[HK] spin siap")
 -- _G.HKAuto = { on=false, dungeon="Bandits Den", diff="Normal" }
 
 _G.HKAuto = _G.HKAuto or { on = false, dungeon = "Bandits Den", diff = "Normal" }
+_G.HKAutoPick = _G.HKAutoPick == nil and true or _G.HKAutoPick
 
 task.spawn(function()
     local function getRF(s, n)
@@ -705,6 +724,97 @@ task.spawn(function()
 end)
 
 print("[HK] auto dungeon siap (mati default)")
+
+-- Auto-pick: altar berkah pilih acak, hadiah boss/mid-run ambil semua.
+-- Mendengarkan event server -> client (tanpa hook), lalu jawab RF-nya.
+task.spawn(function()
+    local svc = game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"].knit.Services
+    local function rf(sname, fname)
+        local ok, r = pcall(function() return svc[sname].RF[fname] end)
+        if ok then
+            return r
+        end
+    end
+    local function findOptions(t)
+        if type(t) ~= "table" then
+            return nil
+        end
+        local n, arr = 0, true
+        for k, v in pairs(t) do
+            n += 1
+            if type(k) ~= "number" or type(v) ~= "table" then
+                arr = false
+            end
+        end
+        if arr and n > 0 then
+            return t
+        end
+        for _, v in pairs(t) do
+            if type(v) == "table" then
+                local r = findOptions(v)
+                if r then
+                    return r
+                end
+            end
+        end
+        return nil
+    end
+    local function optId(opt)
+        for _, k in ipairs({ "Id", "ID", "Index", "Name", "BuffId", "ChestId", "Key" }) do
+            if opt[k] ~= nil and type(opt[k]) ~= "table" then
+                return opt[k]
+            end
+        end
+        return nil
+    end
+    local function hookPick(sname, ename, rfName, multi)
+        local ok, re = pcall(function() return svc[sname].RE[ename] end)
+        if not (ok and re) then
+            return
+        end
+        pcall(function()
+            re.OnClientEvent:Connect(function(...)
+                local args = { ... }
+                _G.HKSnoop = _G.HKSnoop or {}
+                if not _G.HKAutoPick then
+                    return
+                end
+                local opts = nil
+                for _, a in ipairs(args) do
+                    opts = findOptions(a)
+                    if opts then
+                        break
+                    end
+                end
+                if not opts then
+                    return
+                end
+                local ids = {}
+                for _, o in ipairs(opts) do
+                    local id = optId(o)
+                    if id ~= nil then
+                        table.insert(ids, id)
+                    end
+                end
+                if #ids == 0 then
+                    return
+                end
+                task.wait(1)
+                local rfn = rf(sname, rfName)
+                if rfn then
+                    if multi then
+                        pcall(function() rfn:InvokeServer(ids) end)
+                    else
+                        pcall(function() rfn:InvokeServer(ids[math.random(1, #ids)]) end)
+                    end
+                end
+            end)
+        end)
+    end
+    hookPick("DungeonBuffService", "BuffSelection", "SelectBuff", false)
+    hookPick("DungeonRunService", "BossLootChests", "SelectChests", true)
+    hookPick("DungeonRunService", "MidRunChestSelection", "SelectMidRunChests", true)
+end)
 
 
 -- Harta Karun Dungeon | UI Obsidian (mstudio45/deividcomsono fork)
@@ -927,6 +1037,11 @@ A:AddDropdown("HKAutoDiff", {
     Callback = function(v) _G.HKAuto.diff = v end,
 })
 A:AddLabel("status auto", true, "HKAutoStatus")
+A:AddToggle("HKAutoPick", {
+    Text = "Auto pick buff + chest",
+    Default = _G.HKAutoPick ~= false,
+    Callback = function(v) _G.HKAutoPick = v end,
+})
 
 -- ===== TAB SUMMON =====
 local SummonTab = Window:AddTab("Summon", "dices")
