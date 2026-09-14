@@ -1129,10 +1129,37 @@ A:AddToggle("HKAutoRun", {
     Callback = function(v) _G.HKAuto.on = v end,
 })
 A:AddDropdown("HKAutoDiff", {
-    Text = "Difficulty",
-    Values = { "Easy", "Normal" },
+    Text = "Difficulty (Easy-Endless)",
+    Values = { "Easy", "Normal", "Hard", "Nightmare", "Endless" },
     Default = 2,
     Callback = function(v) _G.HKAuto.diff = v end,
+})
+A:AddDropdown("HKAutoDungeon", {
+    Text = "Dungeon",
+    Values = { "Bandits Den", "Forest Challenge", "Goblins", "Knights", "Catacombs", "Snow", "Demon", "Mage", "Throne Room", "Double Dungeon" },
+    Default = 1,
+    Callback = function(v) _G.HKAuto.dungeon = v end,
+})
+A:AddButton({
+    Text = "Start Solo Sekarang",
+    Func = function()
+        task.spawn(function()
+            local ok, rf = pcall(function()
+                return game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
+                    .knit.Services.DungeonQueueService.RF.RequestStartSoloRun
+            end)
+            if ok and rf then
+                local ok2, r = pcall(function()
+                    return rf:InvokeServer(_G.HKAuto.dungeon, _G.HKAuto.diff)
+                end)
+                lib:Notify({
+                    Title = "Queue",
+                    Description = tostring(_G.HKAuto.dungeon) .. " " .. tostring(_G.HKAuto.diff) .. ": " .. tostring(r),
+                    Time = 4,
+                })
+            end
+        end)
+    end,
 })
 A:AddLabel("status auto", true, "HKAutoStatus")
 A:AddToggle("HKAutoPick", {
