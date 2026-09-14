@@ -1068,6 +1068,63 @@ FarmL:AddToggle("HKChest", {
     Default = _G.HK.chest,
     Callback = function(v) _G.HK.chest = v end,
 })
+FarmL:AddButton({
+    Text = "Mulai: Altar dulu, baru Gate 1",
+    Func = function()
+        task.spawn(function()
+            pcall(function()
+                local P = game.Players.LocalPlayer
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                local gen = nil
+                for _, c in ipairs(workspace:GetChildren()) do
+                    if string.find(c.Name, "Generated") then
+                        gen = c
+                        break
+                    end
+                end
+                if gen and hrp then
+                    local best, bd, bpr = nil, 1e9, nil
+                    for _, d in ipairs(gen:GetDescendants()) do
+                        if d:IsA("ProximityPrompt") and d.Enabled
+                            and string.find(string.lower(d.ActionText), "bless") then
+                            local m = d.Parent
+                            while m and not m:IsA("Model") do
+                                m = m.Parent
+                            end
+                            if m then
+                                local ok, piv = pcall(function() return m:GetPivot() end)
+                                if ok then
+                                    local dist = (piv.Position - hrp.Position).Magnitude
+                                    if dist < bd then
+                                        best, bd, bpr = m, dist, d
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if best and bpr then
+                        local piv = best:GetPivot()
+                        hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                        hrp.Velocity = Vector3.new()
+                        task.wait(0.7)
+                        pcall(function() fireproximityprompt(bpr) end)
+                        task.wait(1.5)
+                    end
+                    local r1 = gen:FindFirstChild("Room_1")
+                    if r1 and r1:IsA("Model") then
+                        local piv = r1:GetPivot()
+                        hrp.CFrame = CFrame.new(piv.X, piv.Y + 5, piv.Z)
+                        hrp.Velocity = Vector3.new()
+                    end
+                end
+                _G.HKZone.room = 1
+                _G.HKZone.lastRoom = 1
+                _G.HK.hover = true
+                _G.HK.atk = true
+            end)
+        end)
+    end,
+})
 FarmL:AddToggle("HKDrop", {
     Text = "Auto loot drop monster",
     Default = _G.HK.dropLoot == true,
