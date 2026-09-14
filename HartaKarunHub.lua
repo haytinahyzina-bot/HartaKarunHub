@@ -764,7 +764,54 @@ print("[HK] spin siap")
 -- _G.HKAuto = { on=false, dungeon="Bandits Den", diff="Normal" }
 
 _G.HKAuto = _G.HKAuto or { on = false, dungeon = "Bandits Den", diff = "Normal" }
+_G.HKAuto.replay = _G.HKAuto.replay == nil and true or _G.HKAuto.replay
 _G.HKAutoPick = _G.HKAutoPick == nil and true or _G.HKAutoPick
+
+-- Auto replay: habis run selesai (event DungeonComplete), vote replay
+-- berulang sampai sesi baru muncul (maks 60 dtk), lalu farm lanjut.
+task.spawn(function()
+    local svc = game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"].knit.Services
+    local function getRF(s, n)
+        local ok, rf = pcall(function()
+            return svc[s].RF[n]
+        end)
+        if ok then
+            return rf
+        end
+    end
+    local function sessionAlive()
+        local rf = getRF("DungeonRunService", "GetSessionInfo")
+        if not rf then
+            return false
+        end
+        local ok, s = pcall(function() return rf:InvokeServer() end)
+        return ok and type(s) == "table" and s.LocationId ~= nil
+    end
+    local function doReplay()
+        local rf = getRF("DungeonRunService", "RequestReplay")
+        if not rf then
+            return
+        end
+        for i = 1, 12 do
+            if sessionAlive() then
+                break
+            end
+            pcall(function() rf:InvokeServer() end)
+            task.wait(5)
+        end
+    end
+    local ok, re = pcall(function() return svc.DungeonRunService.RE.DungeonComplete end)
+    if ok and re then
+        pcall(function()
+            re.OnClientEvent:Connect(function()
+                if _G.HKAuto.replay then
+                    task.spawn(doReplay)
+                end
+            end)
+        end)
+    end
+    _G.HKDoReplay = doReplay
+end)
 
 task.spawn(function()
     local function getRF(s, n)
@@ -908,8 +955,78 @@ task.spawn(function()
         end)
     end
     hookPick("DungeonBuffService", "BuffSelection", "SelectBuff", false)
-    hookPick("DungeonRunService", "BossLootChests", "SelectChests", true)
-    hookPick("DungeonRunService", "MidRunChestSelection", "SelectMidRunChests", true)
+    -- Chest boss/mid-run: JANGAN tebak ID Ã¢â‚¬â€ baca jumlah dari UI
+    -- ("SELECT N CHESTS") lalu panggil SelectChests({1..N}).
+    -- Terbukti live: SelectChests({1,2}) -> true + UI ketutup.
+    local function autoChestUI()
+        local P = game.Players.LocalPlayer
+        for i = 1, 20 do
+            local done = false
+            pcall(function()
+                local cs = P.PlayerGui.Main.HUD:FindFirstChild("Chest_Selection")
+                if cs and cs.Visible then
+                    local n = 2
+                    for _, d in ipairs(cs:GetDescendants()) do
+                        if d:IsA("TextLabel") then
+                            local c = string.match(tostring(d.Text), "SELECT (%d+)")
+                            if c then
+                                n = tonumber(c)
+                                break
+                            end
+                        end
+                    end
+                    local ids = {}
+                    for k = 1, n do
+                        table.insert(ids, k)
+                    end
+                    local rf = rfn("DungeonRunService", "SelectChests")
+                    if rf then
+                        pcall(function() rf:InvokeServer(ids) end)
+                    end
+                    local rf2 = rfn2("DungeonRunService", "SelectMidRunChests")
+                    if rf2 then
+                        pcall(function() rf2:InvokeServer(ids) end)
+                    end
+                    task.wait(1)
+                    local cs2 = P.PlayerGui.Main.HUD:FindFirstChild("Chest_Selection")
+                    if not cs2 or not cs2.Visible then
+                        done = true
+                    end
+                else
+                    done = true
+                end
+            end)
+            if done then
+                break
+            end
+            task.wait(1)
+        end
+    end
+    local function rfn(sname, fname)
+        local ok, r = pcall(function()
+            return svc[sname].RF[fname]
+        end)
+        if ok then
+            return r
+        end
+    end
+    local function rfn2(sname, fname)
+        return rfn(sname, fname)
+    end
+    task.spawn(function()
+        while true do
+            if _G.HKAutoPick then
+                pcall(function()
+                    local cs = game.Players.LocalPlayer.PlayerGui.Main.HUD
+                        :FindFirstChild("Chest_Selection")
+                    if cs and cs.Visible then
+                        autoChestUI()
+                    end
+                end)
+            end
+            task.wait(3)
+        end
+    end)
 end)
 
 
@@ -1130,6 +1247,11 @@ A:AddToggle("HKAutoRun", {
     Text = "Full-auto dungeon loop",
     Default = false,
     Callback = function(v) _G.HKAuto.on = v end,
+})
+A:AddToggle("HKAutoReplay", {
+    Text = "Auto replay dungeon sama",
+    Default = _G.HKAuto.replay ~= false,
+    Callback = function(v) _G.HKAuto.replay = v end,
 })
 A:AddDropdown("HKAutoDiff", {
     Text = "Difficulty (Easy-Endless)",
