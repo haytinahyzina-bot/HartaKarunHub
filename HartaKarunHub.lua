@@ -136,6 +136,7 @@ task.spawn(function()
                     end
                 end
                 local gen = getGen()
+                local scope = gen or workspace
                 local rooms = {}
                 if gen then
                     for _, c in ipairs(gen:GetChildren()) do
@@ -150,7 +151,7 @@ task.spawn(function()
                 end
                 local byRoom = {}
                 local best, bestRoom, bd = nil, nil, 1e9
-                for _, d in ipairs(workspace:GetDescendants()) do
+                for _, d in ipairs(scope:GetDescendants()) do
                     if d:IsA("Model") and d ~= P.Character and not chars[d] then
                         if mobAlive(d) then
                             local th = mobPart(d)
@@ -345,11 +346,13 @@ UIS.JumpRequest:Connect(function()
 end)
 
 -- ESP: merah = Humanoid, oranye = attribute (Lv + State).
+-- Scope dungeon saja + tiap 5 detik (hemat FPS).
 task.spawn(function()
     while true do
         if _G.HK.esp then
             pcall(function()
-                for _, d in ipairs(workspace:GetDescendants()) do
+                local scope = getGen() or workspace
+                for _, d in ipairs(scope:GetDescendants()) do
                     if d:IsA("Model") and d ~= P.Character and not d:FindFirstChild("HK_ESP") then
                         local skip = false
                         for _, pl in ipairs(game.Players:GetPlayers()) do
@@ -394,7 +397,7 @@ task.spawn(function()
                 end
             end)
         end
-        task.wait(3)
+        task.wait(5)
     end
 end)
 
