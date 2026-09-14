@@ -7,6 +7,13 @@
 -- Auto-load saat teleport (queue_on_teleport).
 
 pcall(function()
+    if not game:IsLoaded() then
+        game.Loaded:Wait()
+    end
+end)
+task.wait(2)
+
+pcall(function()
     queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()')
 end)
 
@@ -20,6 +27,7 @@ _G.HK.skill = false
 _G.HK.rate = _G.HK.rate or 0.25
 _G.HK.esp = false
 _G.HK.loot = true
+_G.HK.dropLoot = false
 _G.HK.speed = 28
 _G.HK.noclip = false
 _G.HK.infjump = false
@@ -50,7 +58,15 @@ _G.HKSwingIds = {
 local P = game.Players.LocalPlayer
 local RS = game:GetService("RunService")
 local UIS = game:GetService("UserInputService")
-local Inputs = game.ReplicatedStorage.Player.Remotes.Inputs
+-- Lazy: folder Player belum tentu ter-replikasi saat execute (fresh inject).
+local function getInputs()
+    local ok, r = pcall(function()
+        return game.ReplicatedStorage:WaitForChild("Player", 5).Remotes.Inputs
+    end)
+    if ok then
+        return r
+    end
+end
 local HKVIM = nil
 pcall(function() HKVIM = game:GetService("VirtualInputManager") end)
 
@@ -167,11 +183,15 @@ task.spawn(function()
                     tgt = byRoom[cur][1]
                 elseif best then
                     _G.HKZone.room = bestRoom
+                    _G.HKZone.lastRoom = bestRoom
                     tgt = { m = best, hp = mobHP(best) }
                 else
                     _G.HKZone.room = nil
                 end
                 _G.HKTarget = tgt and tgt.m or nil
+                if _G.HKZone.room then
+                    _G.HKZone.lastRoom = _G.HKZone.room
+                end
                 if tgt then
                     _G.HK.target = "R" .. tostring(_G.HKZone.room) .. " "
                         .. tgt.m.Name .. " hp" .. tostring(math.floor(tgt.hp))
@@ -255,7 +275,10 @@ task.spawn(function()
                 if mob and mob.Parent and hrp then
                     local th = mobPart(mob)
                     if th and (th.Position - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
-                        Inputs.Attack:FireServer()
+                        local inp = getInputs()
+                        if inp then
+                            inp.Attack:FireServer()
+                        end
                     end
                 end
             end)
@@ -428,57 +451,53 @@ task.spawn(function()
                             end
                             return rn
                         end
-                        local cur = _G.HKZone.room
-                        -- Chest BERURUTAN per room (gate 1 dulu!): ada chest
-                        -- altar yang cuma bisa dibuka kalau chest gate
-                        -- sebelumnya sudah diambil. Tiap chest DITUNGGU
-                        -- sampai benar kebuka (Enabled=false) baru lanjut.
-                        local byRoom = {}
-                        for _, d in ipairs(gen:GetDescendants()) do
-                            if d:IsA("ProximityPrompt") and d.Enabled
-                                and string.find(string.lower(d.ActionText), "loot") then
-                                local m = d.Parent
-                                while m and not m:IsA("Model") do
-                                    m = m.Parent
-                                end
-                                if m then
-                                    local ok, piv = pcall(function() return m:GetPivot() end)
-                                    if ok then
-                                        local rn = roomOf(piv.Position)
-                                        byRoom[rn] = byRoom[rn] or {}
-                                        table.insert(byRoom[rn], { m = m, pr = d, piv = piv })
+                        -- Aturan ketat user: mob room habis -> chest ROOM ITU
+                        -- dulu (semua), baru pindah gate. Skip direset tiap
+                        -- ada chest yang berhasil dibuka (dependency maju).
+                        local cur = _G.HKZone.room or _G.HKZone.lastRoom
+                        _G.HKChestSkip = _G.HKChestSkip or {}
+                        local tgt, pr = nil, nil
+                        if cur then
+                            local bd = 1e9
+                            for _, d in ipairs(gen:GetDescendants()) do
+                                if d:IsA("ProximityPrompt") and d.Enabled
+                                    and string.find(string.lower(d.ActionText), "loot") then
+                                    local m = d.Parent
+                                    while m and not m:IsA("Model") do
+                                        m = m.Parent
+                                    end
+                                    if m and not _G.HKChestSkip[m:GetFullName()] then
+                                        local ok, piv = pcall(function() return m:GetPivot() end)
+                                        if ok and roomOf(piv.Position) == cur then
+                                            local dist = (piv.Position - hrp.Position).Magnitude
+                                            if dist < bd then
+                                                tgt, pr, bd = m, d, dist
+                                            end
+                                        end
                                     end
                                 end
                             end
-                        end
-                        local order = {}
-                        for rn in pairs(byRoom) do
-                            table.insert(order, rn)
-                        end
-                        table.sort(order)
-                        local tgt, pr = nil, nil
-                        if #order > 0 then
-                            local first = byRoom[order[1]]
-                            table.sort(first, function(a, b)
-                                local da = (a.piv.Position - hrp.Position).Magnitude
-                                local db = (b.piv.Position - hrp.Position).Magnitude
-                                return da < db
-                            end)
-                            tgt, pr = first[1].m, first[1].pr
                         end
                         if tgt and pr then
                             local piv = tgt:GetPivot()
                             hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
                             hrp.Velocity = Vector3.new()
-                            for i = 1, 10 do
+                            local opened = false
+                            for i = 1, 8 do
                                 task.wait(0.7)
                                 if not pr.Enabled then
+                                    opened = true
                                     break
                                 end
                                 pcall(function() fireproximityprompt(pr) end)
                                 if _G.HKTarget ~= nil then
                                     break
                                 end
+                            end
+                            if not opened and pr.Enabled then
+                                _G.HKChestSkip[tgt:GetFullName()] = true
+                            elseif opened then
+                                _G.HKChestSkip = {}
                             end
                         else
                             local altar, apr, abd = nil, nil, 1e9
@@ -528,6 +547,72 @@ task.spawn(function()
             end)
         end
         task.wait(2)
+    end
+end)
+
+-- Auto loot drop monster: dengar event SpawnDrops, petakan pasangan
+-- (id, posisi) dari payload, teleport dekat, panggil CollectDrop.
+-- Bentuk payload tidak tetap jadi parser-nya adaptif; semua aman di-pcall.
+_G.HKDropQueue = _G.HKDropQueue or {}
+task.spawn(function()
+    local svc = game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"].knit.Services
+    local ds = svc:FindFirstChild("DropService")
+    local sp = ds and ds.RE and ds.RE:FindFirstChild("SpawnDrops")
+    local cd = ds and ds.RF and ds.RF:FindFirstChild("CollectDrop")
+    if sp then
+        pcall(function()
+            sp.OnClientEvent:Connect(function(...)
+                for _, a in ipairs({ ... }) do
+                    local function walk(t, ctx)
+                        if type(t) ~= "table" then
+                            return
+                        end
+                        ctx = ctx or {}
+                        for k, v in pairs(t) do
+                            if type(v) == "table" then
+                                walk(v, ctx)
+                            elseif typeof(v) == "Vector3" or typeof(v) == "CFrame" then
+                                ctx.pos = v
+                            elseif type(v) == "string" and #v > 3 then
+                                ctx.id = v
+                            elseif type(v) == "number" and v > 1000 then
+                                ctx.numId = v
+                            end
+                        end
+                        if ctx.pos and (ctx.id or ctx.numId) then
+                            table.insert(_G.HKDropQueue, {
+                                id = ctx.id or ctx.numId,
+                                pos = ctx.pos,
+                            })
+                        end
+                    end
+                    walk(a)
+                end
+            end)
+        end)
+    end
+    while true do
+        if _G.HK.dropLoot and cd and #_G.HKDropQueue > 0 then
+            pcall(function()
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local job = table.remove(_G.HKDropQueue, 1)
+                    if job then
+                        local p = job.pos
+                        if typeof(p) == "CFrame" then
+                            p = p.Position
+                        end
+                        if typeof(p) == "Vector3" then
+                            hrp.CFrame = CFrame.new(p + Vector3.new(0, 4, 0))
+                            hrp.Velocity = Vector3.new()
+                            task.wait(0.4)
+                        end
+                        pcall(function() cd:InvokeServer(job.id) end)
+                    end
+                end
+            end)
+        end
+        task.wait(0.8)
     end
 end)
 
@@ -585,12 +670,11 @@ task.spawn(function()
             return game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
                 .knit.Services[s].RF[n]
         end)
-        if ok then return rf end
+        if ok then
+            return rf
+        end
     end
-    local spin = getRF("SummoningService", "Spin")
-    local gd = getRF("SummoningService", "GetSlotData")
-    local sc = getRF("SummoningService", "GetSpinCounts")
-    local tl = getRF("SummoningService", "ToggleSlotLock")
+    local spin, gd, sc, tl = nil, nil, nil, nil
     local function refresh()
         -- Ditampilkan lewat label status di tab Summon (UI Obsidian).
         -- Riwayat lengkap tetap di _G.HKSpin.log.
@@ -605,6 +689,12 @@ task.spawn(function()
     end
     refresh()
     while GEN == _G.HKSpinGen do
+        if spin == nil then
+            spin = getRF("SummoningService", "Spin")
+            gd = getRF("SummoningService", "GetSlotData")
+            sc = getRF("SummoningService", "GetSpinCounts")
+            tl = getRF("SummoningService", "ToggleSlotLock")
+        end
         if _G.HKSpin.on and spin and gd then
             local okAll, err = pcall(function()
                 local _, slots = pcall(function() return gd:InvokeServer() end)
@@ -681,13 +771,16 @@ task.spawn(function()
         end)
         if ok then return rf end
     end
-    local sessRF = getRF("DungeonRunService", "GetSessionInfo")
-    local soloRF = getRF("DungeonQueueService", "RequestStartSoloRun")
-    local replayRF = getRF("DungeonRunService", "RequestReplay")
-    local selRF = getRF("DungeonRunService", "SelectChests")
+    local sessRF, soloRF, replayRF, selRF = nil, nil, nil, nil
     local state = "idle"
     local idleTicks = 0
     while true do
+        if sessRF == nil then
+            sessRF = getRF("DungeonRunService", "GetSessionInfo")
+            soloRF = getRF("DungeonQueueService", "RequestStartSoloRun")
+            replayRF = getRF("DungeonRunService", "RequestReplay")
+            selRF = getRF("DungeonRunService", "SelectChests")
+        end
         if _G.HKAuto.on and sessRF then
             pcall(function()
                 local ok, s = pcall(function() return sessRF:InvokeServer() end)
@@ -883,6 +976,11 @@ FarmL:AddToggle("HKChest", {
     Text = "Auto loot chest",
     Default = _G.HK.chest,
     Callback = function(v) _G.HK.chest = v end,
+})
+FarmL:AddToggle("HKDrop", {
+    Text = "Auto loot drop monster",
+    Default = _G.HK.dropLoot == true,
+    Callback = function(v) _G.HK.dropLoot = v end,
 })
 
 -- ===== TAB COMBAT =====
