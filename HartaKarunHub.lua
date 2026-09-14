@@ -787,6 +787,65 @@ pcall(function()
     end)
 end)
 
+-- Start-up: saat AUTO FARM dinyalakan, LANGSUNG ke altar dulu
+-- (tanpa syarat apa pun), baru ke gate 1. Dipicu sekali per toggle-ON
+-- lewat _G.HK.goAltar.
+_G.HK.goAltar = false
+task.spawn(function()
+    while true do
+        if _G.HK.goAltar then
+            _G.HK.goAltar = false
+            pcall(function()
+                local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
+                local gen = getGen()
+                if hrp and gen then
+                    local best, bd, bpr = nil, 1e9, nil
+                    for _, d in ipairs(gen:GetDescendants()) do
+                        if d:IsA("ProximityPrompt") and d.Enabled
+                            and string.find(string.lower(d.ActionText), "bless") then
+                            local m = d.Parent
+                            while m and not m:IsA("Model") do
+                                m = m.Parent
+                            end
+                            if m then
+                                local ok, piv = pcall(function() return m:GetPivot() end)
+                                if ok then
+                                    local dist = (piv.Position - hrp.Position).Magnitude
+                                    if dist < bd then
+                                        best, bd, bpr = m, dist, d
+                                    end
+                                end
+                            end
+                        end
+                    end
+                    if best and bpr then
+                        local piv = best:GetPivot()
+                        hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                        hrp.Velocity = Vector3.new()
+                        task.wait(0.7)
+                        pcall(function() fireproximityprompt(bpr) end)
+                        task.wait(1.5)
+                    end
+                    for _, c in ipairs(gen:GetChildren()) do
+                        local n = string.match(c.Name, "^Room_(%d+)$")
+                        if n and tonumber(n) == 1 and c:IsA("Model") then
+                            local ok, piv = pcall(function() return c:GetPivot() end)
+                            if ok then
+                                hrp.CFrame = CFrame.new(piv.X, piv.Y + 5, piv.Z)
+                                hrp.Velocity = Vector3.new()
+                            end
+                            break
+                        end
+                    end
+                    _G.HKZone.room = 1
+                    _G.HKZone.lastRoom = 1
+                end
+            end)
+        end
+        task.wait(0.5)
+    end
+end)
+
 print("[HK] farm v4 aktif (semua OFF)")
 
 
@@ -1492,6 +1551,9 @@ FarmL:AddToggle("HKAutoFarm", {
         _G.HK.autoFarm = v
         for _, k in ipairs({ "hover", "atk", "skill", "esp", "loot", "chest", "stealth", "dropLoot", "autoHeal" }) do
             _G.HK[k] = v
+        end
+        if v then
+            _G.HK.goAltar = true
         end
     end,
 })
