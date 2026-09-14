@@ -417,9 +417,15 @@ RS.RenderStepped:Connect(function()
     end
 end)
 
--- Gate loop: gate bersih -> chest se-room -> altar berkah -> room berikut.
--- Altar terpakai dicatat per sesi.
+-- Gate loop = alur full user:
+--   1. Run fresh -> altar dulu (pilih otomatis via picker).
+--   2. Kembali gate 1 -> bunuh semua (hover farm).
+--   3. Scan chest gate itu -> datangi + buka (tunggu kebuka).
+--   4. Tidak ada -> gate berikut. Ulang sampai boss mati.
+--   5. Popup 2-dari-3 dipilih otomatis (poller terpisah).
+-- Reset per run terdeteksi via TotalMobs (penuh = run baru).
 _G.HKAltarDone = _G.HKAltarDone or {}
+_G.HKChestSkip = _G.HKChestSkip or {}
 task.spawn(function()
     while true do
         if _G.HK.chest and _G.HKTarget == nil then
@@ -454,7 +460,77 @@ task.spawn(function()
                         -- dulu (semua), baru pindah gate. Skip direset tiap
                         -- ada chest yang berhasil dibuka (dependency maju).
                         local cur = _G.HKZone.room or _G.HKZone.lastRoom
+                        if not cur then
+                            -- Reload tengah run: tebak room dari posisi pemain.
+                            cur = roomOf(hrp.Position)
+                            if cur and cur ~= 0 then
+                                _G.HKZone.lastRoom = cur
+                            else
+                                cur = nil
+                            end
+                        end
                         _G.HKChestSkip = _G.HKChestSkip or {}
+                        -- Run fresh (mob masih penuh, belum pernah farm):
+                        -- ke altar berkah DULU, baru mulai dari gate 1.
+                        local freshRun = false
+                        if _G.HKZone.lastRoom == nil then
+                            pcall(function()
+                                local rf = game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
+                                    .knit.Services.DungeonRunService.RF.GetSessionInfo
+                                local s = rf:InvokeServer()
+                                if type(s) == "table" and tonumber(s.MobsRemaining)
+                                    and tonumber(s.TotalMobsInRoom)
+                                    and tonumber(s.MobsRemaining) >= tonumber(s.TotalMobsInRoom)
+                                    and tonumber(s.TotalMobsInRoom) > 0 then
+                                    freshRun = true
+                                end
+                            end)
+                        end
+                        if _G.HKZone.lastRoom == nil and not freshRun and cur then
+                            _G.HKZone.lastRoom = cur
+                        end
+                        if freshRun then
+                            local altar0, apr0, abd0 = nil, nil, 1e9
+                            for _, d in ipairs(gen:GetDescendants()) do
+                                if d:IsA("ProximityPrompt") and d.Enabled
+                                    and string.find(string.lower(d.ActionText), "bless") then
+                                    local m = d.Parent
+                                    while m and not m:IsA("Model") do
+                                        m = m.Parent
+                                    end
+                                    if m and not _G.HKAltarDone[m:GetFullName()] then
+                                        local ok, piv = pcall(function() return m:GetPivot() end)
+                                        if ok then
+                                            local dist = (piv.Position - hrp.Position).Magnitude
+                                            if dist < abd0 then
+                                                altar0, abd0, apr0 = m, dist, d
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                            if altar0 and apr0 then
+                                _G.HKAltarDone[altar0:GetFullName()] = true
+                                local piv = altar0:GetPivot()
+                                hrp.CFrame = CFrame.new(piv.X, piv.Y + 4, piv.Z + 2)
+                                hrp.Velocity = Vector3.new()
+                                task.wait(0.6)
+                                pcall(function() fireproximityprompt(apr0) end)
+                                task.wait(1.5)
+                            else
+                                local r1 = nil
+                                for _, r in ipairs(rooms) do
+                                    if r.n == 1 or not r1 or r.n < r1.n then
+                                        r1 = r
+                                    end
+                                end
+                                if r1 then
+                                    hrp.CFrame = CFrame.new(r1.pos.X, r1.pos.Y + 5, r1.pos.Z)
+                                    hrp.Velocity = Vector3.new()
+                                    _G.HKZone.room = r1.n
+                                end
+                            end
+                        end
                         local tgt, pr = nil, nil
                         if cur then
                             local bd = 1e9
@@ -839,6 +915,134 @@ end)
 
 print("[HK] auto dungeon siap (mati default)")
 
+-- Auto-TAP UI: menekan tombol popup (berkah/chest/replay) lewat sentuhan
+-- virtual. Cara kerja: snapshot rung HUD, saat event datang cari frame
+-- BARU yang muncul berisi tombol, tap tombol tengah, verifikasi ketutup.
+-- Toggle: _G.HKTap (default true).
+_G.HKTap = _G.HKTap == nil and true or _G.HKTap
+task.spawn(function()
+    local P = game.Players.LocalPlayer
+    local VIM = nil
+    pcall(function() VIM = game:GetService("VirtualInputManager") end)
+    local function tapGui(btn)
+        if not (VIM and btn and btn:IsA("GuiObject")) then
+            return false
+        end
+        local ok = pcall(function()
+            local c = btn.AbsolutePosition + btn.AbsoluteSize / 2
+            local v2 = Vector2.new(c.X, c.Y)
+            VIM:SendTouchEvent(0, Enum.UserInputState.Begin, v2, game)
+            task.wait(0.08)
+            VIM:SendTouchEvent(0, Enum.UserInputState.End, v2, game)
+        end)
+        return ok
+    end
+    local function snapshot()
+        local s = {}
+        pcall(function()
+            for _, d in ipairs(P.PlayerGui.Main.HUD:GetDescendants()) do
+                if d:IsA("GuiObject") and d.Visible
+                    and (d:IsA("TextButton") or d:IsA("ImageButton")) then
+                    s[d:GetFullName()] = true
+                end
+            end
+        end)
+        return s
+    end
+    local function findCards()
+        local found = {}
+        pcall(function()
+            for _, d in ipairs(P.PlayerGui.Main.HUD:GetDescendants()) do
+                if (d:IsA("TextButton") or d:IsA("ImageButton")) and d.Visible then
+                    local fp = d:GetFullName()
+                    if not string.find(fp, "HK") then
+                        table.insert(found, d)
+                    end
+                end
+            end
+        end)
+        return found
+    end
+    _G.HKTapUI = {
+        tap = tapGui,
+        cards = findCards,
+        snap = snapshot,
+    }
+    local svc = game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"].knit.Services
+    -- Boss chest: tap Chest_1, Chest_2, lalu Selesai/Finish.
+    local function autoChestButtons()
+        local P2 = game.Players.LocalPlayer
+        local cs = P2.PlayerGui.Main.HUD:FindFirstChild("Chest_Selection")
+        if not (cs and cs.Visible) then
+            return false
+        end
+        for _, n in ipairs({ "Chest_1", "Chest_2" }) do
+            local b = cs:FindFirstChild(n)
+            if b then
+                tapGui(b)
+                task.wait(0.8)
+            end
+        end
+        task.wait(1)
+        for _, d in ipairs(cs:GetDescendants()) do
+            if d:IsA("GuiButton") and d.Visible then
+                local t = ""
+                if d:IsA("TextButton") then
+                    t = tostring(d.Text)
+                end
+                if string.find(string.lower(t), "selesai")
+                    or string.find(string.lower(d.Name), "finish") then
+                    tapGui(d)
+                    break
+                end
+            end
+        end
+        return true
+    end
+    _G.HKChestTap = autoChestButtons
+    -- Replay: tap PUTAR ULANG di layar extracted.
+    local function autoReplayTap()
+        local P2 = game.Players.LocalPlayer
+        for _, d in ipairs(P2.PlayerGui:GetDescendants()) do
+            if d:IsA("ImageButton") and d.Visible then
+                local has = false
+                pcall(function()
+                    for _, c in ipairs(d:GetDescendants()) do
+                        if c:IsA("TextLabel")
+                            and string.find(string.upper(tostring(c.Text)), "PUTAR ULANG") then
+                            has = true
+                            break
+                        end
+                    end
+                end)
+                if has then
+                    tapGui(d)
+                    return true
+                end
+            end
+        end
+        return false
+    end
+    _G.HKReplayTap = autoReplayTap
+    -- Watcher: tiap 2 detik cek popup chest / replay, tap otomatis.
+    task.spawn(function()
+        while true do
+            if _G.HKTap then
+                pcall(function()
+                    local P2 = game.Players.LocalPlayer
+                    local cs = P2.PlayerGui.Main.HUD:FindFirstChild("Chest_Selection")
+                    if cs and cs.Visible then
+                        autoChestButtons()
+                    elseif _G.HKAuto.replay then
+                        autoReplayTap()
+                    end
+                end)
+            end
+            task.wait(2)
+        end
+    end)
+end)
+
 -- Auto-pick: altar berkah pilih acak, hadiah boss/mid-run ambil semua.
 -- Mendengarkan event server -> client (tanpa hook), lalu jawab RF-nya.
 task.spawn(function()
@@ -925,7 +1129,149 @@ task.spawn(function()
             end)
         end)
     end
-    hookPick("DungeonBuffService", "BuffSelection", "SelectBuff", false)
+    -- Buff altar: saat event BuffSelection datang, cari UI pilihannya,
+    -- kumpulkan tombol opsi, coba SelectBuff dengan tiap varian
+    -- (id atribut / index / nama) sampai UI ketutup. Semua dicatat.
+    _G.HKBuffLog = _G.HKBuffLog or {}
+    do
+        local ok, re = pcall(function() return svc.DungeonBuffService.RE.BuffSelection end)
+        if ok and re then
+            pcall(function()
+                re.OnClientEvent:Connect(function(...)
+                    local args = { ... }
+                    table.insert(_G.HKBuffLog, "event datang, nargs=" .. tostring(#args))
+                    if not _G.HKAutoPick then
+                        return
+                    end
+                    task.spawn(function()
+                        task.wait(1.5)
+                        local P = game.Players.LocalPlayer
+                        local btns = {}
+                        pcall(function()
+                            for _, d in ipairs(P.PlayerGui:GetDescendants()) do
+                                if (d:IsA("TextButton") or d:IsA("ImageButton"))
+                                    and d.Visible then
+                                    local fp = d:GetFullName()
+                                    if string.find(fp, "Buff") and not string.find(fp, "HK") then
+                                        local txt = ""
+                                        if d:IsA("TextButton") then
+                                            txt = tostring(d.Text)
+                                        end
+                                        local idv = nil
+                                        pcall(function()
+                                            for ak, av in pairs(d:GetAttributes()) do
+                                                if type(av) ~= "table" and idv == nil then
+                                                    idv = av
+                                                end
+                                            end
+                                        end)
+                                        table.insert(btns, { b = d, txt = txt, attr = idv })
+                                    end
+                                end
+                            end
+                        end)
+                        table.insert(_G.HKBuffLog, "tombol buff: " .. tostring(#btns))
+                        -- Cara 1 (utama): cari judul PILIH BERKAT, tap kartu tengah.
+                        local tapped = false
+                        pcall(function()
+                            local P2 = game.Players.LocalPlayer
+                            for _, d in ipairs(P2.PlayerGui:GetDescendants()) do
+                                if d:IsA("TextLabel") and d.Visible
+                                    and string.find(string.upper(tostring(d.Text)), "BERKAT") then
+                                    local box = d.Parent
+                                    while box and box.Parent ~= P2.PlayerGui do
+                                        local cards = {}
+                                        for _, c in ipairs(box:GetDescendants()) do
+                                            if (c:IsA("TextButton") or c:IsA("ImageButton"))
+                                                and c.Visible then
+                                                table.insert(cards, c)
+                                            end
+                                        end
+                                        if #cards >= 2 then
+                                            local mid = cards[math.floor(#cards / 2) + 1]
+                                            if _G.HKTapUI then
+                                                _G.HKTapUI.tap(mid)
+                                            end
+                                            tapped = true
+                                            break
+                                        end
+                                        box = box.Parent
+                                    end
+                                    if tapped then
+                                        break
+                                    end
+                                end
+                            end
+                        end)
+                        task.wait(1.5)
+                        local stillOpen = false
+                        pcall(function()
+                            local P2 = game.Players.LocalPlayer
+                            for _, d in ipairs(P2.PlayerGui:GetDescendants()) do
+                                if d:IsA("TextLabel") and d.Visible
+                                    and string.find(string.upper(tostring(d.Text)), "BERKAT") then
+                                    stillOpen = true
+                                    break
+                                end
+                            end
+                        end)
+                        if tapped and not stillOpen then
+                            table.insert(_G.HKBuffLog, "OK via tap kartu")
+                            return
+                        end
+                        if #btns == 0 then
+                            return
+                        end
+                        local rfn = rf("DungeonBuffService", "SelectBuff")
+                        if not rfn then
+                            return
+                        end
+                        local order = {}
+                        for i = 1, #btns do
+                            table.insert(order, i)
+                        end
+                        for i = #order, 2, -1 do
+                            local j = math.random(1, i)
+                            order[i], order[j] = order[j], order[i]
+                        end
+                        for _, oi in ipairs(order) do
+                            local o = btns[oi]
+                            local tries = {}
+                            if o.attr ~= nil then
+                                table.insert(tries, o.attr)
+                            end
+                            table.insert(tries, oi)
+                            if o.txt ~= "" then
+                                table.insert(tries, o.txt)
+                            end
+                            for _, v in ipairs(tries) do
+                                pcall(function() rfn:InvokeServer(v) end)
+                                task.wait(1)
+                                local closed = true
+                                pcall(function()
+                                    for _, d in ipairs(P.PlayerGui:GetDescendants()) do
+                                        if (d:IsA("TextButton") or d:IsA("ImageButton"))
+                                            and d.Visible then
+                                            local fp = d:GetFullName()
+                                            if string.find(fp, "Buff") and not string.find(fp, "HK") then
+                                                closed = false
+                                                break
+                                            end
+                                        end
+                                    end
+                                end)
+                                if closed then
+                                    table.insert(_G.HKBuffLog, "OK pakai " .. tostring(v))
+                                    return
+                                end
+                            end
+                        end
+                        table.insert(_G.HKBuffLog, "GAGAL semua varian")
+                    end)
+                end)
+            end)
+        end
+    end
     -- Chest boss/mid-run: JANGAN tebak ID Ã¢â‚¬â€ baca jumlah dari UI
     -- ("SELECT N CHESTS") lalu panggil SelectChests({1..N}).
     -- Terbukti live: SelectChests({1,2}) -> true + UI ketutup.
@@ -1281,6 +1627,11 @@ A:AddToggle("HKAutoPick", {
     Text = "Auto pick buff + chest",
     Default = _G.HKAutoPick ~= false,
     Callback = function(v) _G.HKAutoPick = v end,
+})
+A:AddToggle("HKTapUI", {
+    Text = "Auto tap popup (buff/chest/replay)",
+    Default = _G.HKTap ~= false,
+    Callback = function(v) _G.HKTap = v end,
 })
 
 -- ===== TAB SUMMON =====
