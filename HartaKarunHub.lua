@@ -764,7 +764,7 @@ print("[HK] spin siap")
 -- _G.HKAuto = { on=false, dungeon="Bandits Den", diff="Normal" }
 
 _G.HKAuto = _G.HKAuto or { on = false, dungeon = "Bandits Den", diff = "Normal" }
-_G.HKAuto.replay = _G.HKAuto.replay == nil and true or _G.HKAuto.replay
+_G.HKAuto.replay = false
 _G.HKAutoPick = _G.HKAutoPick == nil and true or _G.HKAutoPick
 
 -- Auto replay: habis run selesai (event DungeonComplete), vote replay
@@ -813,6 +813,7 @@ task.spawn(function()
     _G.HKDoReplay = doReplay
 end)
 
+-- Status run (read-only, untuk label): lobby / farming / done.
 task.spawn(function()
     local function getRF(s, n)
         local ok, rf = pcall(function()
@@ -821,45 +822,19 @@ task.spawn(function()
         end)
         if ok then return rf end
     end
-    local sessRF, soloRF, replayRF, selRF = nil, nil, nil, nil
-    local state = "idle"
-    local idleTicks = 0
+    local sessRF = nil
     while true do
         if sessRF == nil then
             sessRF = getRF("DungeonRunService", "GetSessionInfo")
-            soloRF = getRF("DungeonQueueService", "RequestStartSoloRun")
-            replayRF = getRF("DungeonRunService", "RequestReplay")
-            selRF = getRF("DungeonRunService", "SelectChests")
         end
-        if _G.HKAuto.on and sessRF then
+        if sessRF then
             pcall(function()
                 local ok, s = pcall(function() return sessRF:InvokeServer() end)
-                local inRun = ok and type(s) == "table" and s.LocationId ~= nil
-                if not inRun then
-                    state = "lobby"
-                    if soloRF and _G.HKAuto.dungeon then
-                        pcall(function()
-                            soloRF:InvokeServer(_G.HKAuto.dungeon, _G.HKAuto.diff)
-                        end)
-                    end
+                if ok and type(s) == "table" and s.LocationId ~= nil then
+                    _G.HKAuto.state = tostring(s.Phase) .. " " .. tostring(s.MobsRemaining)
                 else
-                    local phase = tostring(s.Phase)
-                    if phase == "Combat" then
-                        state = "farming"
-                        idleTicks = 0
-                    else
-                        state = "done:" .. phase
-                        idleTicks += 1
-                        if idleTicks == 2 and selRF then
-                            pcall(function() selRF:InvokeServer() end)
-                        end
-                        if idleTicks >= 4 and replayRF then
-                            pcall(function() replayRF:InvokeServer() end)
-                            idleTicks = 0
-                        end
-                    end
+                    _G.HKAuto.state = "lobby"
                 end
-                _G.HKAuto.state = state
             end)
         end
         task.wait(10)
@@ -1242,49 +1217,11 @@ B:AddButton({
         lib:Notify({ Title = "Harta Karun", Description = "Semua fitur dimatikan", Time = 3 })
     end,
 })
-local A = MiscTab:AddLeftGroupbox("Full Auto")
-A:AddToggle("HKAutoRun", {
-    Text = "Full-auto dungeon loop",
-    Default = false,
-    Callback = function(v) _G.HKAuto.on = v end,
-})
+local A = MiscTab:AddLeftGroupbox("Otomatis")
 A:AddToggle("HKAutoReplay", {
     Text = "Auto replay dungeon sama",
     Default = _G.HKAuto.replay ~= false,
     Callback = function(v) _G.HKAuto.replay = v end,
-})
-A:AddDropdown("HKAutoDiff", {
-    Text = "Difficulty (Easy-Endless)",
-    Values = { "Easy", "Normal", "Hard", "Nightmare", "Endless" },
-    Default = 2,
-    Callback = function(v) _G.HKAuto.diff = v end,
-})
-A:AddDropdown("HKAutoDungeon", {
-    Text = "Dungeon",
-    Values = { "Bandits Den", "Forest Challenge", "Goblins", "Knights", "Catacombs", "Snow", "Demon", "Mage", "Throne Room", "Double Dungeon" },
-    Default = 1,
-    Callback = function(v) _G.HKAuto.dungeon = v end,
-})
-A:AddButton({
-    Text = "Start Solo Sekarang",
-    Func = function()
-        task.spawn(function()
-            local ok, rf = pcall(function()
-                return game.ReplicatedStorage.Packages._Index["sleitnick_knit@1.7.0"]
-                    .knit.Services.DungeonQueueService.RF.RequestStartSoloRun
-            end)
-            if ok and rf then
-                local ok2, r = pcall(function()
-                    return rf:InvokeServer(_G.HKAuto.dungeon, _G.HKAuto.diff)
-                end)
-                lib:Notify({
-                    Title = "Queue",
-                    Description = tostring(_G.HKAuto.dungeon) .. " " .. tostring(_G.HKAuto.diff) .. ": " .. tostring(r),
-                    Time = 4,
-                })
-            end
-        end)
-    end,
 })
 A:AddLabel("status auto", true, "HKAutoStatus")
 A:AddToggle("HKAutoPick", {
