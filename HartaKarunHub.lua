@@ -15,7 +15,7 @@ task.wait(2)
 
 _G.HK = _G.HK or {}
 _G.HK.hover = false
-_G.HK.height = _G.HK.height or 6.5
+_G.HK.height = _G.HK.height or 14
 _G.HK.chest = false
 _G.HK.atk = false
 _G.HK.atkRange = _G.HK.atkRange or 15
@@ -32,6 +32,7 @@ _G.HK.flyspeed = _G.HK.flyspeed or 60
 _G.HK.tick = 0
 _G.HK.target = "none"
 _G.HK.stealth = false
+_G.HK.autoFarm = false
 
 -- Pengecualian hover (nama model). NPC quest / dummy / pemain di-skip otomatis.
 _G.HKBlock = _G.HKBlock or { "Galran", "BananitaDolphinita", "Forge Archon", "Awakened Devil", "Rig" }
@@ -691,7 +692,92 @@ task.spawn(function()
     end
 end)
 
--- Anti AFK.
+-- Wave navigator: baca progress wave dari UI (slot Completed/Treasure/
+-- kosong/Boss), teleport ke wave tempur yang belum selesai. Dijalankan
+-- saat tidak ada target mob. Cache room di-rebuild berkala (streaming!).
+_G.HKWaveNav = _G.HKWaveNav == nil and true or _G.HKWaveNav
+_G.HKCombatRooms = nil
+_G.HKGenName = nil
+_G.HKRoomsAt = 0
+task.spawn(function()
+    while true do
+        if _G.HKWaveNav and _G.HKTarget == nil then
+            pcall(function()
+                local P2 = game.Players.LocalPlayer
+                local hrp = P2.Character and P2.Character:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local gen = getGen()
+                    if gen then
+                        local now = os.clock()
+                        if _G.HKGenName ~= gen.Name or not _G.HKCombatRooms or now - _G.HKRoomsAt > 30 then
+                            _G.HKGenName = gen.Name
+                            _G.HKRoomsAt = now
+                            _G.HKCombatRooms = {}
+                            for _, c in ipairs(gen:GetChildren()) do
+                                local n = string.match(c.Name, "^Room_(%d+)$")
+                                if n and c:IsA("Model") then
+                                    local hasSpawn = false
+                                    local sp = c:FindFirstChild("Spawns")
+                                    if sp then
+                                        for _, s in ipairs(sp:GetChildren()) do
+                                            if string.find(s.Name, "Enemy") then
+                                                hasSpawn = true
+                                                break
+                                            end
+                                        end
+                                    end
+                                    if hasSpawn then
+                                        local ok, piv = pcall(function() return c:GetPivot() end)
+                                        if ok then
+                                            table.insert(_G.HKCombatRooms, {
+                                                n = tonumber(n),
+                                                pos = piv.Position,
+                                            })
+                                        end
+                                    end
+                                end
+                            end
+                            table.sort(_G.HKCombatRooms, function(a, b) return a.n < b.n end)
+                        end
+                        local cp = P2.PlayerGui.Main.HUD.Dungeon_Container
+                            :FindFirstChild("Completion_Progress")
+                        local list = cp and cp:FindFirstChild("List")
+                        if list and _G.HKCombatRooms and #_G.HKCombatRooms > 0 then
+                            local slots = {}
+                            for _, c in ipairs(list:GetChildren()) do
+                                if c:IsA("ImageLabel")
+                                    and (c.Name == "Zone" or c.Name == "ZoneSlot") then
+                                    table.insert(slots, c)
+                                end
+                            end
+                            for i, s in ipairs(slots) do
+                                local done, isBoss = false, false
+                                for _, cc in ipairs(s:GetChildren()) do
+                                    if cc:IsA("ImageLabel") and cc.Visible then
+                                        if cc.Name == "Completed" then
+                                            done = true
+                                        end
+                                        if cc.Name == "Boss" then
+                                            isBoss = true
+                                        end
+                                    end
+                                end
+                                if not done and not isBoss then
+                                    local dest = _G.HKCombatRooms[math.min(i, #_G.HKCombatRooms)]
+                                    _G.HKWaveNote = "wave" .. tostring(i) .. "->R" .. tostring(dest.n)
+                                    hrp.CFrame = CFrame.new(dest.pos.X, dest.pos.Y + 5, dest.pos.Z)
+                                    hrp.Velocity = Vector3.new()
+                                    break
+                                end
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+        task.wait(3)
+    end
+end)
 pcall(function()
     local VU = game:GetService("VirtualUser")
     P.Idled:Connect(function()
@@ -1399,6 +1485,16 @@ local Window = lib:CreateWindow({
 -- ===== TAB FARM =====
 local FarmTab = Window:AddTab("Farm", "swords")
 local FarmL = FarmTab:AddLeftGroupbox("Hover Farm")
+FarmL:AddToggle("HKAutoFarm", {
+    Text = "AUTO FARM (semua)",
+    Default = _G.HK.autoFarm == true,
+    Callback = function(v)
+        _G.HK.autoFarm = v
+        for _, k in ipairs({ "hover", "atk", "skill", "esp", "loot", "chest", "stealth", "dropLoot", "autoHeal" }) do
+            _G.HK[k] = v
+        end
+    end,
+})
 FarmL:AddToggle("HKHover", {
     Text = "Hover di atas bandit",
     Default = _G.HK.hover,
@@ -1413,6 +1509,11 @@ FarmL:AddToggle("HKChest", {
     Text = "Auto loot chest",
     Default = _G.HK.chest,
     Callback = function(v) _G.HK.chest = v end,
+})
+FarmL:AddToggle("HKWaveNav", {
+    Text = "Navigasi wave belum selesai",
+    Default = _G.HKWaveNav ~= false,
+    Callback = function(v) _G.HKWaveNav = v end,
 })
 FarmL:AddButton({
     Text = "Mulai: Altar dulu, baru Gate 1",
