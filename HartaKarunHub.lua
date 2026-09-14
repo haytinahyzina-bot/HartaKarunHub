@@ -118,6 +118,20 @@ local function mobPart(m)
     return m:FindFirstChild("HumanoidRootPart") or m:FindFirstChild("Torso")
 end
 
+-- Posisi target: part tubuh kalau ada, kalau belum materialisasi
+-- (boss: aksesoris ada, badan belum) pakai tengah bounding box.
+local function mobPos(m)
+    local th = mobPart(m)
+    if th then
+        return th.Position, th
+    end
+    local ok, cf = pcall(function() return m:GetBoundingBox() end)
+    if ok and cf then
+        return cf.Position, nil
+    end
+    return nil, nil
+end
+
 -- Scanner: tiap 0.5 dtk petakan mob hidup ke room, prioritaskan
 -- darah terendah di room aktif. Di luar Generated tetap dilirik
 -- (maks 600 stud) supaya event tidak ke-skip total.
@@ -151,15 +165,15 @@ task.spawn(function()
                 for _, d in ipairs(scope:GetDescendants()) do
                     if d:IsA("Model") and d ~= P.Character and not chars[d] then
                         if mobAlive(d) then
-                            local th = mobPart(d)
-                            if th then
-                                local dist = (th.Position - hrp.Position).Magnitude
+                            local pos = mobPos(d)
+                            if pos then
+                                local dist = (pos - hrp.Position).Magnitude
                                 if dist < 600 then
                                     local rn, rd = 0, 1e9
-                                    for n, pos in pairs(rooms) do
+                                    for n, rpos in pairs(rooms) do
                                         local dxz = Vector2.new(
-                                            th.Position.X - pos.X,
-                                            th.Position.Z - pos.Z).Magnitude
+                                            pos.X - rpos.X,
+                                            pos.Z - rpos.Z).Magnitude
                                         if dxz < rd then
                                             rn, rd = n, dxz
                                         end
@@ -241,8 +255,8 @@ RS.Heartbeat:Connect(function()
         mob = nil
     end
     if _G.HK.hover and mob then
-        local th = mobPart(mob)
-        if th then
+        local pos = mobPos(mob)
+        if pos then
             hum.AutoRotate = false
             local h = _G.HK.height
             if h > 30 then
@@ -251,7 +265,7 @@ RS.Heartbeat:Connect(function()
             if h < 4 then
                 h = 4
             end
-            hrp.CFrame = CFrame.new(th.Position + Vector3.new(0, h, 0), th.Position)
+            hrp.CFrame = CFrame.new(pos + Vector3.new(0, h, 0), pos)
             hrp.Velocity = Vector3.new()
             hrp.RotVelocity = Vector3.new()
         end
@@ -271,8 +285,8 @@ task.spawn(function()
                 local mob = _G.HKTarget
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 if mob and mob.Parent and hrp then
-                    local th = mobPart(mob)
-                    if th and (th.Position - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
+                    local pos = mobPos(mob)
+                    if pos and (pos - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
                         local inp = getInputs()
                         if inp then
                             inp.Attack:FireServer()
@@ -294,8 +308,8 @@ task.spawn(function()
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 local inRange = false
                 if mob and mob.Parent and hrp then
-                    local th = mobPart(mob)
-                    if th and (th.Position - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
+                    local pos = mobPos(mob)
+                    if pos and (pos - hrp.Position).Magnitude <= (_G.HK.atkRange or 15) then
                         inRange = true
                     end
                 end
@@ -371,6 +385,10 @@ task.spawn(function()
                         end
                         if label then
                             local ador = mobPart(d)
+                            if not ador then
+                                local _, p2 = mobPos(d)
+                                ador = p2
+                            end
                             if ador then
                                 local bb = Instance.new("BillboardGui")
                                 bb.Name = "HK_ESP"
