@@ -37,7 +37,7 @@ _G.HK.autoFarm = false
 -- Pengecualian hover (nama model). NPC quest / dummy / pemain di-skip otomatis.
 _G.HKBlock = _G.HKBlock or { "Galran", "BananitaDolphinita", "Forge Archon", "Awakened Devil", "Rig" }
 _G.HKZone = { room = nil }
-_G.HKTarget = nil
+_G.HKT = nil
 _G.HKAltarDone = _G.HKAltarDone or {}
 
 -- Tombol skill (1-4) + heal (5). Ubah sesukamu.
@@ -200,7 +200,7 @@ task.spawn(function()
                 else
                     _G.HKZone.room = nil
                 end
-                _G.HKTarget = tgt and tgt.m or nil
+                _G.HKT = tgt and tgt.m or nil
                 if _G.HKZone.room then
                     _G.HKZone.lastRoom = _G.HKZone.room
                 end
@@ -250,11 +250,11 @@ RS.Heartbeat:Connect(function()
             hrp.Velocity = Vector3.new()
         end
     end
-    local mob = _G.HKTarget
+    local mob = _G.HKT
     if mob and mob.Parent and not mobAlive(mob) then
         mob = nil
     end
-    if _G.HK.hover and mob then
+    if _G.HK.hx and mob then
         local pos = mobPos(mob)
         if pos then
             hum.AutoRotate = false
@@ -282,7 +282,7 @@ task.spawn(function()
     while true do
         if _G.HK.atk then
             pcall(function()
-                local mob = _G.HKTarget
+                local mob = _G.HKT
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 if mob and mob.Parent and hrp then
                     local pos = mobPos(mob)
@@ -304,7 +304,7 @@ task.spawn(function()
     while true do
         if _G.HK.skill and HKVIM then
             pcall(function()
-                local mob = _G.HKTarget
+                local mob = _G.HKT
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 local inRange = false
                 if mob and mob.Parent and hrp then
@@ -447,7 +447,7 @@ _G.HKAltarDone = _G.HKAltarDone or {}
 _G.HKChestSkip = _G.HKChestSkip or {}
 task.spawn(function()
     while true do
-        if _G.HK.chest and _G.HKTarget == nil then
+        if _G.HK.chest and _G.HKT == nil then
             pcall(function()
                 local hrp = P.Character and P.Character:FindFirstChild("HumanoidRootPart")
                 if hrp then
@@ -584,7 +584,7 @@ task.spawn(function()
                                     break
                                 end
                                 pcall(function() fireproximityprompt(pr) end)
-                                if _G.HKTarget ~= nil then
+                                if _G.HKT ~= nil then
                                     break
                                 end
                             end
@@ -719,7 +719,7 @@ _G.HKGenName = nil
 _G.HKRoomsAt = 0
 task.spawn(function()
     while true do
-        if _G.HKWaveNav and _G.HKTarget == nil then
+        if _G.HKWaveNav and _G.HKT == nil then
             pcall(function()
                 local P2 = game.Players.LocalPlayer
                 local hrp = P2.Character and P2.Character:FindFirstChild("HumanoidRootPart")
@@ -1046,6 +1046,31 @@ task.spawn(function()
         end)
     end
     _G.HKDoReplay = doReplay
+    -- Watcher cadangan: kalau fase non-Combat bertahan 30 dtk (event
+    -- complete tidak datang), paksa replay. Reset tiap sesi Combat.
+    task.spawn(function()
+        local idle = 0
+        while true do
+            if _G.HKAuto and _G.HKAuto.replay then
+                local rf = getRF("DungeonRunService", "GetSessionInfo")
+                if rf then
+                    local ok, s = pcall(function() return rf:InvokeServer() end)
+                    if ok and type(s) == "table" and s.LocationId ~= nil then
+                        if tostring(s.Phase) ~= "Combat" then
+                            idle += 1
+                            if idle >= 3 then
+                                pcall(doReplay)
+                                idle = -12
+                            end
+                        else
+                            idle = 0
+                        end
+                    end
+                end
+            end
+            task.wait(10)
+        end
+    end)
 end)
 
 -- Status run (read-only, untuk label): lobby / farming / done.
@@ -1567,9 +1592,11 @@ FarmL:AddToggle("HKAutoFarm", {
     Default = _G.HK.autoFarm == true,
     Callback = function(v)
         _G.HK.autoFarm = v
-        for _, k in ipairs({ "hover", "atk", "skill", "esp", "loot", "chest", "stealth", "dropLoot", "autoHeal" }) do
+        for _, k in ipairs({ "atk", "skill", "esp", "loot", "chest", "stealth", "dropLoot", "autoHeal" }) do
             _G.HK[k] = v
         end
+        _G.HK.hx = v
+        _G.HK.hover = false
         if v then
             _G.HK.goAltar = true
         end
@@ -1577,8 +1604,11 @@ FarmL:AddToggle("HKAutoFarm", {
 })
 FarmL:AddToggle("HKHover", {
     Text = "Hover di atas bandit",
-    Default = _G.HK.hover,
-    Callback = function(v) _G.HK.hover = v end,
+    Default = _G.HK.hx == true,
+    Callback = function(v)
+        _G.HK.hx = v
+        _G.HK.hover = false
+    end,
 })
 FarmL:AddSlider("HKHeight", {
     Text = "Tinggi hover",
@@ -1785,6 +1815,7 @@ B:AddButton({
     Text = "STOP SEMUA",
     Func = function()
         _G.HK.hover = false
+        _G.HK.hx = false
         _G.HK.atk = false
         _G.HK.skill = false
         _G.HK.loot = false
