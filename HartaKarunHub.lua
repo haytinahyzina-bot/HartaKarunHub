@@ -4,7 +4,7 @@
 -- Harta Karun Dungeon | Farm v4 (tulis ulang bersih)
 -- Satu scanner + satu hover + attack/skill/ESP/stealth/gate.
 -- Semua fitur DEFAULT OFF, nyalakan dari dashboard.
--- Auto-load saat teleport (queue_on_teleport).
+-- (Auto-load teleport SENGAJA tidak dipakai: bikin double-load.)
 
 pcall(function()
     if not game:IsLoaded() then
@@ -12,10 +12,6 @@ pcall(function()
     end
 end)
 task.wait(2)
-
-pcall(function()
-    queue_on_teleport('loadstring(game:HttpGet("https://raw.githubusercontent.com/haytinahyzina-bot/HartaKarunHub/main/HartaKarunHub.lua"))()')
-end)
 
 _G.HK = _G.HK or {}
 _G.HK.hover = false
